@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import logging
 import subprocess
+import time
 
 log = logging.getLogger("bench.claude")
 
+MAX_RETRIES = 5
+RETRY_WAIT = 600  # 10 minutes
 
 _model: str | None = None
 
@@ -30,7 +33,8 @@ def ask_claude_sync(
 ) -> str:
     """Send a prompt to Claude via the local Claude Code CLI.
 
-    Returns the response text. Raises RuntimeError on failure.
+    Retries up to 5 times with 10-minute waits on failure.
+    Returns the response text. Raises RuntimeError after all retries exhausted.
     """
     cmd = ["claude", "-p", prompt]
     model = _get_model()
@@ -42,9 +46,23 @@ def ask_claude_sync(
         cmd.extend(["--max-tokens", str(max_tokens)])
 
     log.debug("Calling Claude CLI (%d char prompt)", len(prompt))
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
 
-    if result.returncode != 0:
-        raise RuntimeError(f"Claude CLI failed (rc={result.returncode}): {result.stderr.strip()}")
+    for attempt in range(1, MAX_RETRIES + 1):
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
 
-    return result.stdout.strip()
+        if result.returncode == 0:
+            return result.stdout.strip()
+
+        stderr = result.stderr.strip()
+        log.warning(
+            "Claude CLI failed (attempt %d/%d, rc=%d): %s",
+            attempt, MAX_RETRIES, result.returncode, stderr[:200],
+        )
+
+        if attempt < MAX_RETRIES:
+            log.info("Waiting %d minutes before retry...", RETRY_WAIT // 60)
+            time.sleep(RETRY_WAIT)
+
+    raise RuntimeError(
+        f"Claude CLI failed after {MAX_RETRIES} attempts (rc={result.returncode}): {stderr[:200]}"
+    )
