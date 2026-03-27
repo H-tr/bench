@@ -1,0 +1,38 @@
+# Environment
+.env
+.venv/
+__pycache__/
+*.pyc
+
+# uv
+.python-version
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Data (lives in Dropbox, not repo)
+*.json
+!package.json
+
+# Google OAuth token
+token.json
+credentials.json
+
+# Logs
+*.log
+
+# Build
+dist/
+*.egg-info/
+
+# Test
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Meta-requirement (not part of the app)
+research_automation_meta_requirement.md

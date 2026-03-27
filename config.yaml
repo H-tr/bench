@@ -1,0 +1,84 @@
+# Bench configuration
+
+# --- Researcher profile ---
+researcher:
+  name: ""
+  semantic_scholar_id: ""       # Your Semantic Scholar author ID
+  google_scholar_id: ""         # Your Google Scholar author ID
+  arxiv_author_query: ""        # e.g. "Au:+LastName_F"
+
+# --- Paper tracking ---
+papers:
+  arxiv_categories:
+    - cs.RO        # Robotics
+    - cs.AI        # Artificial Intelligence
+    - cs.LG        # Machine Learning
+    - cs.CV        # Computer Vision
+  keywords:
+    - robot manipulation
+    - dexterous grasping
+    - reinforcement learning robotics
+    - sim-to-real transfer
+    - diffusion policy
+    - imitation learning
+    - foundation models robotics
+  max_results_per_category: 50
+  relevance_threshold: 7        # 1-10, higher = stricter filtering
+  max_papers_in_digest: 8
+  auto_import_to_zotero: true
+  zotero_collection: "Bench-Auto"
+
+# --- Tracked authors (co-authors, key researchers) ---
+tracked_authors:
+  # - name: "Jane Doe"
+  #   semantic_scholar_id: "12345678"
+
+# --- News & industry ---
+news:
+  rss_feeds:
+    - https://arxiv.org/rss/cs.RO
+    - https://techcrunch.com/category/robotics/feed/
+    - https://spectrum.ieee.org/feeds/topic/robotics.rss
+  keywords:
+    - robotics
+    - manipulation
+    - humanoid
+    - embodied AI
+  max_items_in_digest: 5
+
+# --- Calendar ---
+calendar:
+  enabled: true
+  calendar_ids:
+    - primary
+
+# --- Deadlines ---
+deadlines:
+  warn_days_before: [7, 3, 1, 0]
+  # entries:
+  #   - name: "CoRL 2026 submission"
+  #     date: "2026-06-15"
+  #     type: paper
+
+# --- Digest ---
+digest:
+  notion_database_id: ""        # Notion database for digest pages
+  notion_parent_page_id: ""     # Or use a parent page instead
+  archive_locally: true
+
+# --- Paths ---
+paths:
+  dropbox_data: "~/Dropbox/bench-data"
+
+# --- Schedule ---
+schedule:
+  cron: "0 7 * * *"            # 7 AM daily
+  timezone: "America/New_York"
+
+# --- Modules (enable/disable) ---
+modules:
+  papers: true
+  intelligence: true
+  news: true
+  assistant: true
+  digest: true
