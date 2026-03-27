@@ -21,6 +21,28 @@ S2_API = "https://api.semanticscholar.org/graph/v1"
 log = logging.getLogger("bench.papers")
 
 
+def _extract_json_array(text: str) -> list[dict]:
+    """Extract a JSON array from Claude's response, handling markdown fences and extra text."""
+    text = text.strip()
+    if "```" in text:
+        parts = text.split("```")
+        for part in parts:
+            part = part.strip()
+            if part.startswith("json"):
+                part = part[4:].strip()
+            if part.startswith("["):
+                text = part
+                break
+    start = text.find("[")
+    end = text.rfind("]")
+    if start == -1 or end == -1:
+        return []
+    try:
+        return json.loads(text[start : end + 1])
+    except json.JSONDecodeError:
+        return []
+
+
 class PapersModule(BaseModule):
     name = "papers"
     section_title = "📄 PAPERS"
@@ -223,14 +245,9 @@ Return ONLY a JSON array: [{{"index": 0, "score": 7, "summary": "one line"}}]"""
 
         try:
             response = ask_claude_sync(prompt)
-            response = response.strip()
-            # Strip markdown code fences
-            if "```" in response:
-                response = response.split("```")[1]
-                if response.startswith("json"):
-                    response = response[4:]
-                response = response.strip()
-            scores = json.loads(response)
+            scores = _extract_json_array(response)
+            if not scores:
+                raise ValueError("No valid JSON array in response")
         except Exception as e:
             log.error("Claude scoring failed for batch: %s", e)
             # Fallback: tracked author papers get 7, others get 5

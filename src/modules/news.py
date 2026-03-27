@@ -16,6 +16,30 @@ from src.utils.data import load_json, save_json
 log = logging.getLogger("bench.news")
 
 
+def _extract_json_array(text: str) -> list[dict]:
+    """Extract a JSON array from Claude's response, handling markdown fences and extra text."""
+    text = text.strip()
+    # Strip markdown code fences
+    if "```" in text:
+        parts = text.split("```")
+        for part in parts:
+            part = part.strip()
+            if part.startswith("json"):
+                part = part[4:].strip()
+            if part.startswith("["):
+                text = part
+                break
+    # Find the JSON array in the text
+    start = text.find("[")
+    end = text.rfind("]")
+    if start == -1 or end == -1:
+        return []
+    try:
+        return json.loads(text[start : end + 1])
+    except json.JSONDecodeError:
+        return []
+
+
 class NewsModule(BaseModule):
     name = "news"
     section_title = "📰 NEWS"
@@ -102,18 +126,15 @@ class NewsModule(BaseModule):
             # Otherwise, ask Claude to extract news items from the page
             text = resp.text[:5000]
             prompt = f"""Extract news/blog post titles and URLs from this {name} webpage HTML.
-Return JSON array: [{{"title": "...", "url": "..."}}]
+Return ONLY a JSON array, no other text: [{{"title": "...", "url": "..."}}]
 Only include actual articles/posts, not navigation links. Max 5 items.
-If no articles found, return [].
+If no articles found, return exactly: []
 
 HTML snippet:
 {text}"""
 
-            response = ask_claude_sync(prompt, system_prompt="Extract structured data from HTML. Return only valid JSON.")
-            response = response.strip()
-            if response.startswith("```"):
-                response = response.split("\n", 1)[1].rsplit("```", 1)[0]
-            articles = json.loads(response)
+            response = ask_claude_sync(prompt)
+            articles = _extract_json_array(response)
 
             return [
                 {
@@ -154,11 +175,11 @@ Return ONLY valid JSON array: [{{"index": 0, "summary": "one line", "relevant": 
 Only include items where relevant=true."""
 
         try:
-            response = ask_claude_sync(prompt, system_prompt="You are a news filter. Return only valid JSON.")
-            response = response.strip()
-            if response.startswith("```"):
-                response = response.split("\n", 1)[1].rsplit("```", 1)[0]
-            scored = json.loads(response)
+            response = ask_claude_sync(prompt)
+            scored = _extract_json_array(response)
+            if not scored:
+                log.warning("Claude news filter returned no valid JSON, passing items through")
+                return items[:8]
         except Exception as e:
             log.error("Claude news filter failed: %s", e)
             return items[:8]
