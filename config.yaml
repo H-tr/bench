@@ -2,10 +2,10 @@
 
 # --- Researcher profile ---
 researcher:
-  name: ""
-  semantic_scholar_id: ""       # Your Semantic Scholar author ID
-  google_scholar_id: ""         # Your Google Scholar author ID
-  arxiv_author_query: ""        # e.g. "Au:+LastName_F"
+  name: "Tianrun Hu"
+  semantic_scholar_id: ""       # Fill in your own Semantic Scholar author ID
+  google_scholar_id: ""         # Fill in your own Google Scholar author ID
+  linkedin_url: ""              # Your LinkedIn profile URL (for opportunity matching)
 
 # --- Paper tracking ---
 papers:
@@ -14,37 +14,137 @@ papers:
     - cs.AI        # Artificial Intelligence
     - cs.LG        # Machine Learning
     - cs.CV        # Computer Vision
+    - cs.CL        # Computation and Language (LLMs, reasoning)
+    - cs.MA        # Multiagent Systems
   keywords:
+    - reasoning
+    - planning
+    - task and motion planning
     - robot manipulation
-    - dexterous grasping
-    - reinforcement learning robotics
-    - sim-to-real transfer
-    - diffusion policy
+    - robot learning
     - imitation learning
-    - foundation models robotics
-  max_results_per_category: 50
-  relevance_threshold: 7        # 1-10, higher = stricter filtering
-  max_papers_in_digest: 8
+    - diffusion policy
+    - foundation model
+    - large language model
+    - world model
+    - sim-to-real
+    - video generation
+    - state representation
+    - reinforcement learning
+    - embodied AI
+  max_results_per_category: 100
+  relevance_threshold: 6        # 1-10, lower = more papers shown
+  max_papers_in_digest: 15
   auto_import_to_zotero: true
   zotero_collection: "Bench-Auto"
 
-# --- Tracked authors (co-authors, key researchers) ---
+# --- Tracked authors (key researchers to follow) ---
 tracked_authors:
-  # - name: "Jane Doe"
-  #   semantic_scholar_id: "12345678"
+  - name: "Leslie Pack Kaelbling"
+    affiliation: "MIT"
+    semantic_scholar_id: "1709512"
+  - name: "Tomas Lozano-Perez"
+    affiliation: "MIT"
+    semantic_scholar_id: "143956445"
+  - name: "Lydia Kavraki"
+    affiliation: "Rice"
+    semantic_scholar_id: "2329464875"
+  - name: "Marc Toussaint"
+    affiliation: "TU Berlin"
+    semantic_scholar_id: "2325906422"
+  - name: "Jiayuan Mao"
+    affiliation: "MIT"
+    semantic_scholar_id: "2069542088"
+  - name: "Jiajun Wu"
+    affiliation: "Stanford"
+    semantic_scholar_id: "2154707273"
+  - name: "Tom Silver"
+    affiliation: "MIT/Princeton"
+    semantic_scholar_id: "69872776"
+  - name: "Russ Tedrake"
+    affiliation: "MIT"
+    semantic_scholar_id: "101622042"
+  - name: "Joshua Tenenbaum"
+    affiliation: "MIT"
+    semantic_scholar_id: "2137828528"
 
 # --- News & industry ---
 news:
   rss_feeds:
-    - https://arxiv.org/rss/cs.RO
+    # AI & Robotics
     - https://techcrunch.com/category/robotics/feed/
+    - https://techcrunch.com/category/artificial-intelligence/feed/
     - https://spectrum.ieee.org/feeds/topic/robotics.rss
+    - https://the-decoder.com/feed/
+    - https://www.technologyreview.com/feed/
+    # General tech & science
+    - https://news.ycombinator.com/rss
+    - https://arstechnica.com/feed/
+    # World news (major events)
+    - https://feeds.bbci.co.uk/news/world/rss.xml
+    - https://rss.nytimes.com/services/xml/rss/nyt/World.xml
+    - https://feeds.reuters.com/reuters/topNews
+  companies:
+    - name: "Physical Intelligence (PI)"
+      url: "https://www.pi.website/blog"
+    - name: "Figure AI"
+      url: "https://www.figure.ai/news"
+    - name: "Skild AI"
+      url: "https://www.skild.ai"
+    - name: "Covariant"
+      url: "https://covariant.ai/insights/"
   keywords:
     - robotics
-    - manipulation
+    - AI
+    - artificial intelligence
+    - machine learning
     - humanoid
-    - embodied AI
-  max_items_in_digest: 5
+    - foundation model
+    - reasoning
+    - planning
+    - semiconductor
+    - NVIDIA
+    - OpenAI
+    - Google DeepMind
+    - Anthropic
+    - geopolitics
+    - technology policy
+    - Singapore
+  max_items_in_digest: 15
+
+# --- Opportunities ---
+opportunities:
+  keywords:
+    - robotics researcher
+    - robot learning
+    - manipulation research
+    - TAMP
+    - postdoc robotics
+    - PhD robotics
+    - research scientist robotics
+  locations:
+    - remote
+    - USA
+    - Singapore
+  linkedin_search: true
+
+# --- Personal assistant ---
+assistant:
+  # Google Sheets to check
+  group_meeting_sheet: "https://docs.google.com/spreadsheets/d/1gwkEeE9jkt735EQMN6V1s7cVc1aqfHn70F_zloFpSzw/edit?gid=0#gid=0"
+  reading_group_sheet: "https://docs.google.com/spreadsheets/d/1hY7CC-PQBZr2H-FNjF1QWWkrVqeRLVJJuU4s_tVKBsI/edit?gid=531128456#gid=531128456"
+  researcher_name_in_sheets: "tianrun"    # How your name appears in the sheets
+
+  # Daily recommended tasks (do if time allows)
+  daily_habits:
+    - "Read 1 paper deeply (30 min)"
+    - "Review experiment logs / check running jobs"
+    - "Write 1 paragraph of current paper draft"
+    - "Exercise / take a walk (20 min)"
+
+  # Email
+  email_enabled: true
+  email_max_items: 5            # Top N important emails to show
 
 # --- Calendar ---
 calendar:
@@ -62,23 +162,26 @@ deadlines:
 
 # --- Digest ---
 digest:
-  notion_database_id: ""        # Notion database for digest pages
-  notion_parent_page_id: ""     # Or use a parent page instead
+  notion_parent_page_id: "33049a6e-a20e-810c-b503-f172e76760bd"
   archive_locally: true
 
 # --- Paths ---
 paths:
   dropbox_data: "~/Dropbox/bench-data"
 
+# --- Claude model ---
+claude:
+  model: "opus"               # opus, sonnet, or haiku
+
 # --- Schedule ---
 schedule:
   cron: "0 7 * * *"            # 7 AM daily
-  timezone: "America/New_York"
+  timezone: "Asia/Singapore"
 
 # --- Modules (enable/disable) ---
 modules:
   papers: true
   intelligence: true
   news: true
-  assistant: true
+  assistant: false       # Assistant runs separately via: uv run python src/assistant.py
   digest: true

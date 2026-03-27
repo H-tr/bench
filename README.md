@@ -1,33 +1,58 @@
 # Bench
 
-A researcher's daily automation system. Fetches papers, tracks citations, monitors news, manages tasks, and pushes a concise daily digest to Notion.
+A researcher's daily automation system. Two parts: a **daily digest** (papers, news, opportunities → Notion) and a **personal assistant** (email, calendar, tasks, meetings).
 
 ## Setup
 
 ```bash
 uv sync                    # install everything
-cp .env.example .env       # fill in API keys
-vim config.yaml            # set your research keywords, categories, etc.
+cp .env.example .env       # fill in API keys (optional, most things use Claude Code MCP)
+vim config.yaml            # set your research keywords, tracked authors, etc.
 ```
 
-## Usage
+## Daily Digest
+
+Runs once a day (manually or via cron). Fetches papers, news, opportunities and pushes a digest to Notion.
 
 ```bash
 uv run python src/runner.py
 ```
 
-## What happens when you run it
+What it does:
+1. **papers** — arXiv + tracked authors (Semantic Scholar), scored by Claude, top picks surfaced
+2. **intelligence** — your citation stats, job/grant opportunities
+3. **news** — RSS feeds (TechCrunch, BBC, HN, IEEE, etc.), company blogs, filtered by Claude
+4. **digest** — compiles everything into a daily Notion page
 
-1. **Load config** — reads `config.yaml` and `.env`
-2. **Run modules in order**, each producing a section for the digest:
-   - **assistant** — checks calendar, deadlines, tasks, suggests today's priorities
-   - **papers** — fetches new arXiv papers, scores relevance with Claude, imports top picks to Zotero
-   - **intelligence** — tracks your citations, co-authors' new papers, job/grant opportunities
-   - **news** — pulls RSS feeds, filters AI/robotics news, generates one-line summaries
-3. **Compile digest** — the digest module collects all results and pushes a single-page summary to Notion
-4. **Print summary** — shows a table of what ran, what succeeded, and what errored
+## Personal Assistant
 
-Each module is independent. If one crashes, the others still run. Disable any module in `config.yaml` under `modules:`. Logs are saved to `~/Dropbox/bench-data/logs/`.
+Run anytime. Checks your email, calendar, meetings, and tasks.
+
+```bash
+uv run python src/assistant.py              # everything
+uv run python src/assistant.py -s calendar  # just calendar
+uv run python src/assistant.py -s email     # just email
+uv run python src/assistant.py -s meetings  # group meeting + reading group
+uv run python src/assistant.py -s tasks     # tasks + deadlines + habits
+uv run python src/assistant.py -s suggest   # paper suggestions for reading group
+```
+
+## Task Management
+
+```bash
+uv run python scripts/task.py                              # list tasks
+uv run python scripts/task.py add "finish rebuttal" -d 2026-04-01 -p 1
+uv run python scripts/task.py done "rebuttal"              # mark done
+uv run python scripts/task.py remove "rebuttal"            # delete
+```
+
+Or use `/task` in any Claude Code session in this repo.
+
+## Utilities
+
+```bash
+uv run python scripts/clear_cache.py       # clear seen papers/news for fresh run
+```
 
 ## Cron (optional)
 
@@ -37,8 +62,8 @@ Each module is independent. If one crashes, the others still run. Disable any mo
 
 ## Config
 
-All settings live in `config.yaml`: arXiv categories, keywords, relevance thresholds, RSS feeds, deadlines, and module toggles.
+All settings in `config.yaml`: tracked authors, arXiv categories, keywords, RSS feeds, Google Sheet URLs, daily habits, model choice, and module toggles.
 
 ## Data
 
-Persistent data (seen papers, tasks, logs, digests) is stored in `~/Dropbox/bench-data/` — synced across machines via Dropbox.
+Persistent data in `~/Dropbox/bench-data/` — synced across machines via Dropbox.

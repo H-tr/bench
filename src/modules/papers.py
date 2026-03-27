@@ -1,6 +1,24 @@
-"""Paper tracking: arXiv fetch, relevance scoring, Zotero import."""
+"""Paper tracking: arXiv fetch, Semantic Scholar author tracking, Claude scoring."""
+
+from __future__ import annotations
+
+import json
+import logging
+import time
+from datetime import datetime, timedelta
+from pathlib import Path
+from xml.etree import ElementTree
+
+import httpx
 
 from src.modules.base import BaseModule, ModuleResult
+from src.utils.claude import ask_claude_sync
+from src.utils.data import load_json, save_json
+
+ARXIV_API = "https://export.arxiv.org/api/query"
+S2_API = "https://api.semanticscholar.org/graph/v1"
+
+log = logging.getLogger("bench.papers")
 
 
 class PapersModule(BaseModule):
@@ -8,5 +26,221 @@ class PapersModule(BaseModule):
     section_title = "📄 PAPERS"
 
     def run(self) -> ModuleResult:
-        # Phase 1: arXiv fetch, Claude scoring, Zotero import
-        return self._skip("Not yet implemented (Phase 1)")
+        cfg = self.config.get("papers", {})
+        seen_path = Path(self.data_dir) / "seen_papers.json"
+        seen = set(load_json(seen_path, default=[]))
+
+        all_papers: list[dict] = []
+
+        # 1. Fetch from arXiv
+        try:
+            arxiv_papers = self._fetch_arxiv(cfg)
+            log.info("  arXiv returned %d papers", len(arxiv_papers))
+        except Exception as e:
+            log.error("arXiv fetch failed: %s", e)
+            arxiv_papers = []
+
+        # 2. Fetch tracked authors from Semantic Scholar
+        try:
+            author_papers = self._fetch_tracked_authors()
+            log.info("  Tracked authors returned %d papers", len(author_papers))
+        except Exception as e:
+            log.error("Semantic Scholar fetch failed: %s", e)
+            author_papers = []
+
+        # Deduplicate against seen
+        new_papers = []
+        new_ids = set()
+        for p in arxiv_papers + author_papers:
+            pid = p.get("id", p.get("paperId", ""))
+            if not pid or pid in seen or pid in new_ids:
+                continue
+            new_ids.add(pid)
+            new_papers.append(p)
+
+        log.info("  %d new papers after dedup", len(new_papers))
+
+        if not new_papers:
+            return self._result(items=[{"text": "No new papers today."}])
+
+        # 3. Score with Claude (in batches of 15)
+        scored = self._score_papers_batched(new_papers, cfg)
+
+        threshold = cfg.get("relevance_threshold", 7)
+        max_papers = cfg.get("max_papers_in_digest", 10)
+        top_papers = [p for p in scored if p.get("score", 0) >= threshold]
+        top_papers = sorted(top_papers, key=lambda x: x.get("score", 0), reverse=True)[:max_papers]
+
+        log.info("  %d papers scored >= %d", len(top_papers), threshold)
+
+        # Always include tracked author papers even if score is lower
+        for p in scored:
+            if p.get("tracked_author") and p not in top_papers and len(top_papers) < max_papers:
+                top_papers.append(p)
+
+        # 4. Mark all new papers as seen (after scoring succeeded)
+        seen.update(new_ids)
+        save_json(seen_path, list(seen))
+
+        items = []
+        for p in top_papers:
+            items.append({
+                "title": p["title"],
+                "authors": p.get("authors", ""),
+                "url": p.get("url", ""),
+                "summary": p.get("summary", p["title"]),
+                "score": p.get("score", 0),
+                "tracked_author": p.get("tracked_author", ""),
+            })
+
+        if not items:
+            items = [{"text": "No papers above relevance threshold today."}]
+
+        return self._result(items=items)
+
+    def _fetch_arxiv(self, cfg: dict) -> list[dict]:
+        """Fetch recent papers from arXiv matching categories and keywords."""
+        categories = cfg.get("arxiv_categories", ["cs.RO", "cs.AI"])
+        keywords = cfg.get("keywords", [])
+        max_results = cfg.get("max_results_per_category", 50)
+
+        cat_query = " OR ".join(f"cat:{c}" for c in categories)
+        kw_query = " OR ".join(f'all:"{k}"' for k in keywords[:5])
+        query = f"({cat_query}) AND ({kw_query})" if kw_query else cat_query
+
+        params = {
+            "search_query": query,
+            "start": 0,
+            "max_results": max_results,
+            "sortBy": "submittedDate",
+            "sortOrder": "descending",
+        }
+
+        resp = httpx.get(ARXIV_API, params=params, timeout=30)
+        resp.raise_for_status()
+
+        ns = {"atom": "http://www.w3.org/2005/Atom"}
+        root = ElementTree.fromstring(resp.text)
+
+        papers = []
+        for entry in root.findall("atom:entry", ns):
+            title = entry.findtext("atom:title", "", ns).strip().replace("\n", " ")
+            paper_id = entry.findtext("atom:id", "", ns).strip()
+            summary = entry.findtext("atom:summary", "", ns).strip().replace("\n", " ")
+            authors = ", ".join(
+                a.findtext("atom:name", "", ns)
+                for a in entry.findall("atom:author", ns)
+            )
+            papers.append({
+                "id": paper_id,
+                "title": title,
+                "authors": authors,
+                "abstract": summary[:500],
+                "url": paper_id,
+                "source": "arxiv",
+            })
+
+        return papers
+
+    def _fetch_tracked_authors(self) -> list[dict]:
+        """Fetch recent papers from tracked authors via Semantic Scholar."""
+        authors = self.config.get("tracked_authors", [])
+        if not authors:
+            return []
+
+        papers = []
+        for author in authors:
+            s2_id = author.get("semantic_scholar_id")
+            if not s2_id:
+                continue
+
+            try:
+                url = f"{S2_API}/author/{s2_id}/papers"
+                params = {
+                    "fields": "title,authors,url,abstract,year,publicationDate",
+                    "limit": 5,
+                    "sort": "publicationDate:desc",
+                }
+                resp = httpx.get(url, params=params, timeout=15)
+                resp.raise_for_status()
+                data = resp.json()
+
+                for p in data.get("data", []):
+                    pub_date = p.get("publicationDate", "")
+                    if pub_date:
+                        try:
+                            pd = datetime.strptime(pub_date, "%Y-%m-%d")
+                            if pd < datetime.now() - timedelta(days=30):
+                                continue
+                        except ValueError:
+                            pass
+
+                    paper_authors = ", ".join(
+                        a.get("name", "") for a in p.get("authors", [])[:5]
+                    )
+                    papers.append({
+                        "id": p.get("paperId", ""),
+                        "title": p.get("title", ""),
+                        "authors": paper_authors,
+                        "abstract": (p.get("abstract") or "")[:500],
+                        "url": p.get("url", ""),
+                        "source": "semantic_scholar",
+                        "tracked_author": author["name"],
+                    })
+
+                time.sleep(0.5)  # Rate limit
+            except Exception as e:
+                log.warning("Failed to fetch papers for %s: %s", author["name"], e)
+
+        return papers
+
+    def _score_papers_batched(self, papers: list[dict], cfg: dict) -> list[dict]:
+        """Score papers in batches of 15 to avoid prompt length issues."""
+        batch_size = 15
+        for i in range(0, len(papers), batch_size):
+            batch = papers[i : i + batch_size]
+            self._score_batch(batch, cfg)
+        return papers
+
+    def _score_batch(self, papers: list[dict], cfg: dict) -> None:
+        """Score a batch of papers using Claude. Modifies papers in place."""
+        researcher_name = self.config.get("researcher", {}).get("name", "a robotics researcher")
+        keywords = cfg.get("keywords", [])
+
+        paper_list = ""
+        for i, p in enumerate(papers):
+            tracked = f" [TRACKED AUTHOR: {p['tracked_author']}]" if p.get("tracked_author") else ""
+            paper_list += f"\n[{i}] {p['title']}{tracked}\nAuthors: {p.get('authors', 'N/A')}\nAbstract: {p.get('abstract', 'N/A')[:250]}\n"
+
+        prompt = f"""Score each paper 1-10 for {researcher_name} who works on: {', '.join(keywords[:6])}.
+
+7+ = genuinely want to read. Papers by tracked authors get a bonus.
+Write a one-line summary: what they did + why it matters.
+
+{paper_list}
+
+Return ONLY a JSON array: [{{"index": 0, "score": 7, "summary": "one line"}}]"""
+
+        try:
+            response = ask_claude_sync(prompt)
+            response = response.strip()
+            # Strip markdown code fences
+            if "```" in response:
+                response = response.split("```")[1]
+                if response.startswith("json"):
+                    response = response[4:]
+                response = response.strip()
+            scores = json.loads(response)
+        except Exception as e:
+            log.error("Claude scoring failed for batch: %s", e)
+            # Fallback: tracked author papers get 7, others get 5
+            for p in papers:
+                p["score"] = 7 if p.get("tracked_author") else 5
+                p["summary"] = p["title"]
+            return
+
+        for item in scores:
+            idx = item.get("index", -1)
+            if 0 <= idx < len(papers):
+                papers[idx]["score"] = item.get("score", 0)
+                papers[idx]["summary"] = item.get("summary", papers[idx]["title"])
