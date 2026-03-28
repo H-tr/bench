@@ -42,52 +42,56 @@ def setup_logging():
 # Phase 1: Sonnet searches broadly
 # ---------------------------------------------------------------------------
 
-def opus_search(topic: str, depth: int) -> str:
-    """Opus searches the web for relevant papers on the topic."""
-    log.info("Opus searching for papers on: %s", topic)
-
-    prompt = f"""You are a senior researcher doing a precise literature search on: "{topic}"
+SEARCH_PROMPT = """You are a senior researcher doing a precise literature search on: "{topic}"
+Focus on this specific angle: {focus}
 
 IMPORTANT: Stay strictly on topic. Do NOT drift to adjacent popular areas.
-For example, if the topic is "LLM for task and motion planning", do NOT include VLA/visuomotor policy papers
-unless they explicitly involve symbolic planning or TAMP. Relevance to the EXACT topic matters more than popularity.
+AVOID popularity bias: a niche paper precisely about this topic is MORE valuable
+than a famous paper only tangentially related.
 
-Search strategy:
-1. Search Semantic Scholar and arXiv with precise queries matching the exact topic
-2. Find the seminal/foundational papers in this specific sub-area
-3. Search for key authors who work specifically on this topic
-4. Follow citation chains — check what the foundational papers cite AND what cites them
-5. Look for lesser-known but highly relevant workshop papers, not just top-venue hits
-6. Search for existing surveys on this exact topic
+Search Semantic Scholar and arXiv. Follow citation chains. Find ~{count} papers.
 
-AVOID popularity bias: a niche paper that is precisely about "{topic}" is MORE valuable
-than a famous paper that is only tangentially related.
-
-For each paper found, provide:
-- Title
-- Authors (first 3)
-- Year
-- URL (arXiv or Semantic Scholar link)
-- Citation count if available
-- Abstract or 2-3 sentence summary
+For each paper, provide:
+- Title, Authors (first 3), Year, URL, Citation count, 2-sentence summary
 - Role: "foundational", "key_contribution", "recent", "survey", or "niche_but_relevant"
 
-Find at least {depth} papers. Ensure diversity:
-- Foundational works that defined this specific sub-area
-- Key technical contributions (not just popular, but actually advancing THIS topic)
-- Recent work (2024-2026) specifically on this topic
-- Niche/workshop papers that are directly relevant but may be less cited
-- Any existing surveys
-
-Return as a JSON array:
+Return ONLY a JSON array:
 [{{"title": "...", "authors": "...", "year": 2024, "url": "...", "citations": 100, "summary": "...", "role": "key_contribution"}}]"""
 
-    response = ask_claude_sync(
-        prompt,
-        timeout=600,
-        allowed_tools=["WebFetch", "Bash"],
-    )
-    return response
+
+def opus_search(topic: str, depth: int) -> str:
+    """Opus searches in multiple focused rounds to avoid timeout."""
+    log.info("Opus searching for papers on: %s", topic)
+
+    # Split into focused sub-searches so each call is manageable
+    focuses = [
+        f"foundational and seminal papers that started the area of {topic}",
+        f"key technical contributions and methods (2020-2024) in {topic}",
+        f"most recent work (2024-2026) and state-of-the-art in {topic}",
+        f"niche, lesser-known, or workshop papers specifically about {topic} — avoid popular/obvious ones",
+    ]
+
+    all_papers = []
+    per_focus = max(8, depth // len(focuses))
+
+    for i, focus in enumerate(focuses):
+        log.info("  Search round %d/%d: %s", i + 1, len(focuses), focus[:60])
+        prompt = SEARCH_PROMPT.format(topic=topic, focus=focus, count=per_focus)
+
+        try:
+            response = ask_claude_sync(
+                prompt,
+                timeout=600,
+                allowed_tools=["WebFetch", "Bash"],
+            )
+            papers = parse_paper_list(response)
+            log.info("    Found %d papers", len(papers))
+            all_papers.extend(papers)
+        except Exception as e:
+            log.warning("    Search round %d failed: %s", i + 1, e)
+
+    # Return as JSON string for compatibility with parse_paper_list
+    return json.dumps(all_papers)
 
 
 def parse_paper_list(response: str) -> list[dict]:
@@ -342,11 +346,20 @@ def run_survey(topic: str, depth: int = 20, output_path: str | None = None):
 
     console.print(f"\n[bold]Survey: {topic}[/bold]\n")
 
-    # Phase 1: Opus searches
+    # Phase 1: Opus searches (multiple focused rounds)
     console.print("[cyan]Phase 1: Opus searching...[/cyan]")
     search_response = opus_search(topic, depth)
     papers = parse_paper_list(search_response)
-    console.print(f"  Round 1: found {len(papers)} papers")
+    # Deduplicate across rounds
+    seen_titles = set()
+    unique = []
+    for p in papers:
+        key = p.get("title", "").lower().strip()[:80]
+        if key and key not in seen_titles:
+            seen_titles.add(key)
+            unique.append(p)
+    papers = unique
+    console.print(f"  Found {len(papers)} unique papers across all rounds")
 
     if not papers:
         console.print("[red]No papers found. Try rephrasing the topic.[/red]")
