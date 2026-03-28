@@ -33,8 +33,10 @@ papers:
     - reinforcement learning
     - embodied AI
   max_results_per_category: 100
-  relevance_threshold: 6        # 1-10, lower = more papers shown
+  prefilter_threshold: 5        # Stage 1: abstract-only pre-filter (sonnet, fast)
+  relevance_threshold: 7        # Stage 2: after sonnet reads full paper
   max_papers_in_digest: 15
+  max_papers_to_analyze: 5    # Deep delta analysis for top N papers
   auto_import_to_zotero: true
   zotero_collection: "Bench-Auto"
 
@@ -67,6 +69,20 @@ tracked_authors:
   - name: "Joshua Tenenbaum"
     affiliation: "MIT"
     semantic_scholar_id: "2137828528"
+
+# --- Tracked institutions/labs ---
+tracked_institutions:
+  - "Allen Institute for AI"          # AI2
+  - "OpenAI"
+  - "NVIDIA Research"
+  - "Toyota Research Institute"       # TRI
+  - "Google DeepMind"
+  - "Meta FAIR"
+  - "Stanford IRIS Lab"
+  - "MIT CSAIL"
+  - "CMU Robotics Institute"
+  - "UC Berkeley BAIR"
+  - "Physical Intelligence"
 
 # --- News & industry ---
 news:

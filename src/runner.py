@@ -47,6 +47,18 @@ def run_pipeline(config: dict) -> None:
     log = logging.getLogger("bench")
     log.info("Bench starting — %s", datetime.now().strftime("%Y-%m-%d %A %H:%M"))
 
+    # Refresh knowledge profile (used for personalized paper analysis)
+    from src.utils.paper_analysis import build_knowledge_profile, KNOWLEDGE_PROFILE_PATH
+    if not KNOWLEDGE_PROFILE_PATH.exists():
+        log.info("Building knowledge profile from Notion (first run)...")
+        build_knowledge_profile(config)
+    else:
+        # Refresh weekly
+        age_days = (datetime.now().timestamp() - KNOWLEDGE_PROFILE_PATH.stat().st_mtime) / 86400
+        if age_days > 7:
+            log.info("Refreshing knowledge profile (%.0f days old)...", age_days)
+            build_knowledge_profile(config)
+
     enabled = config.get("modules", {})
     results: list[ModuleResult] = []
 

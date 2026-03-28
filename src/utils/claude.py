@@ -9,7 +9,7 @@ import time
 log = logging.getLogger("bench.claude")
 
 MAX_RETRIES = 5
-RETRY_WAIT = 600  # 10 minutes
+RETRY_WAIT = 60  # 1 minute
 
 _model: str | None = None
 
@@ -30,25 +30,41 @@ def ask_claude_sync(
     prompt: str,
     system_prompt: str | None = None,
     max_tokens: int | None = None,
+    model_override: str | None = None,
+    timeout: int = 300,
+    allowed_tools: list[str] | None = None,
 ) -> str:
     """Send a prompt to Claude via the local Claude Code CLI.
 
-    Retries up to 5 times with 10-minute waits on failure.
-    Returns the response text. Raises RuntimeError after all retries exhausted.
+    Args:
+        model_override: Use a specific model instead of the config default.
+        timeout: Subprocess timeout in seconds (default 300).
+        allowed_tools: List of tools to allow (e.g. ["WebFetch", "Read"]).
+
+    Retries up to 5 times with 1-minute waits on failure.
     """
     cmd = ["claude", "-p", prompt]
-    model = _get_model()
+    model = model_override or _get_model()
     if model:
         cmd.extend(["--model", model])
     if system_prompt:
         cmd.extend(["--system-prompt", system_prompt])
     if max_tokens:
         cmd.extend(["--max-tokens", str(max_tokens)])
+    if allowed_tools:
+        cmd.extend(["--allowedTools", ",".join(allowed_tools)])
 
-    log.debug("Calling Claude CLI (%d char prompt)", len(prompt))
+    log.debug("Calling Claude CLI (%d char prompt, model=%s)", len(prompt), model or "default")
 
     for attempt in range(1, MAX_RETRIES + 1):
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            log.warning("Claude CLI timed out (attempt %d/%d, %ds)", attempt, MAX_RETRIES, timeout)
+            if attempt < MAX_RETRIES:
+                log.info("Waiting %d minutes before retry...", RETRY_WAIT // 60)
+                time.sleep(RETRY_WAIT)
+            continue
 
         if result.returncode == 0:
             return result.stdout.strip()
@@ -64,5 +80,5 @@ def ask_claude_sync(
             time.sleep(RETRY_WAIT)
 
     raise RuntimeError(
-        f"Claude CLI failed after {MAX_RETRIES} attempts (rc={result.returncode}): {stderr[:200]}"
+        f"Claude CLI failed after {MAX_RETRIES} attempts"
     )

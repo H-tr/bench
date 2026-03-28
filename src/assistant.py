@@ -23,7 +23,7 @@ from src.utils.config import load_config
 
 console = Console()
 
-SECTIONS = ["calendar", "email", "meetings", "tasks", "suggest", "all"]
+SECTIONS = ["calendar", "email", "meetings", "tasks", "all"]
 
 
 def setup_logging():

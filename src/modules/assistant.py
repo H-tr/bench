@@ -31,7 +31,6 @@ class AssistantModule(BaseModule):
             "email": lambda: self._check_email(cfg) if cfg.get("email_enabled", True) else None,
             "meetings": lambda: self._run_meetings(cfg, today),
             "tasks": lambda: self._run_tasks(cfg, deadline_cfg, today),
-            "suggest": lambda: self._suggest_reading_group_papers(),
         }
 
         fn = runners.get(section)
@@ -134,14 +133,6 @@ class AssistantModule(BaseModule):
             habit_text = "\n".join(f"  - [ ] {h}" for h in habits)
             items.append({"type": "habits", "text": f"**If time allows:**\n{habit_text}"})
 
-        # 8. Paper suggestions for reading group
-        try:
-            suggestions = self._suggest_reading_group_papers()
-            if suggestions:
-                items.append({"type": "paper_suggestions", "text": suggestions})
-        except Exception as e:
-            log.warning("Paper suggestion failed: %s", e)
-
         if not items:
             return self._result(items=[{"text": "No assistant items today."}])
 
@@ -154,6 +145,7 @@ class AssistantModule(BaseModule):
             f"List all my calendar events for today ({today}). "
             f"For each event show: time, title, and location/link if any. "
             f"Format as a compact list. If no events, say 'No events today.'",
+            model_override="sonnet",
         )
         if not response or "error" in response.lower()[:50]:
             return None
@@ -168,6 +160,7 @@ class AssistantModule(BaseModule):
             f"Show the top {max_items} emails: sender, subject, and a one-line summary of what action is needed (if any). "
             f"Skip newsletters and automated notifications unless they're urgent. "
             f"Format as a compact list.",
+            model_override="sonnet",
         )
         if not response or "error" in response.lower()[:50]:
             return None
@@ -188,6 +181,7 @@ class AssistantModule(BaseModule):
             f"2. Who is presenting this week?\n"
             f"3. Any upcoming presentations by {name} in the next 2 weeks?\n\n"
             f"Today is {today}. Be concise.",
+            model_override="sonnet",
         )
         if not response or "error" in response.lower()[:50]:
             return None
@@ -208,6 +202,7 @@ class AssistantModule(BaseModule):
             f"2. Who is presenting this week and what paper?\n"
             f"3. Any upcoming slots for {name} in the next 2 weeks?\n\n"
             f"Today is {today}. Be concise.",
+            model_override="sonnet",
         )
         if not response or "error" in response.lower()[:50]:
             return None
@@ -259,44 +254,3 @@ class AssistantModule(BaseModule):
 
         return "**✅ Tasks:**\n" + "\n".join(lines)
 
-    def _suggest_reading_group_papers(self) -> str | None:
-        """Suggest deep, insightful papers for reading group."""
-        # Check if there's a recent digest with papers
-        digests_dir = Path(self.data_dir) / "digests"
-        if not digests_dir.exists():
-            return None
-
-        # Get papers from recent digests
-        recent_papers = []
-        for f in sorted(digests_dir.glob("*.json"), reverse=True)[:3]:
-            try:
-                d = load_json(f)
-                for r in d.get("results", []):
-                    if r.get("module") == "papers":
-                        for item in r.get("items", []):
-                            if item.get("title") and item.get("score", 0) >= 8:
-                                recent_papers.append(item)
-            except Exception:
-                continue
-
-        if not recent_papers:
-            return None
-
-        paper_list = "\n".join(
-            f"- {p['title']} (score: {p.get('score', '?')}): {p.get('summary', '')}"
-            for p in recent_papers[:10]
-        )
-
-        response = ask_claude_sync(
-            f"From these recent high-scoring papers, pick 1-2 that would be best for a lab reading group presentation. "
-            f"Choose papers that are:\n"
-            f"- Deep and insightful (not incremental)\n"
-            f"- The group can learn generalizable ideas from\n"
-            f"- Spark interesting discussion\n\n"
-            f"Papers:\n{paper_list}\n\n"
-            f"For each pick, explain in one sentence why it's good for the reading group.",
-        )
-
-        if not response:
-            return None
-        return f"**💡 Reading Group Paper Suggestions:**\n{response}"

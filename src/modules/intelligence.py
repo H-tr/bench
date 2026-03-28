@@ -118,7 +118,7 @@ Max 5 most relevant opportunities. If you can't find current listings, return []
 """
 
         try:
-            response = ask_claude_sync(prompt, system_prompt="You are a job/opportunity search assistant. Return only valid JSON.")
+            response = ask_claude_sync(prompt, model_override="sonnet")
             response = response.strip()
             if response.startswith("```"):
                 response = response.split("\n", 1)[1].rsplit("```", 1)[0]

@@ -25,7 +25,8 @@ class DigestModule(BaseModule):
         date_str = today.strftime("%Y-%m-%d")
         weekday = today.strftime("%A")
 
-        # Build the digest content
+        # Build the digest content (also collects paper analyses for sub-pages)
+        self._paper_analyses: list[dict] = []
         content = self._build_content(module_results, date_str, weekday)
 
         # Archive locally
@@ -47,6 +48,9 @@ class DigestModule(BaseModule):
             notion_url = self._push_to_notion_via_claude(content, date_str, weekday)
             if notion_url:
                 log.info("Digest pushed to Notion: %s", notion_url)
+                # Create sub-pages for paper delta briefings
+                if self._paper_analyses:
+                    self._create_analysis_subpages(notion_url, self._paper_analyses)
         except Exception as e:
             log.error("Notion push failed: %s", e)
 
@@ -94,7 +98,7 @@ class DigestModule(BaseModule):
                         if summary:
                             lines.append(f"  {summary}")
                     elif item.get("score"):
-                        # Paper
+                        # Paper — one-liner in digest, analysis goes to sub-page
                         url = item.get("url", "")
                         title = item.get("title", "Untitled")
                         link = f"[{title}]({url})" if url else title
@@ -105,6 +109,13 @@ class DigestModule(BaseModule):
                         lines.append(f"- {prefix}{link} [{score}/10]")
                         if summary:
                             lines.append(f"  {summary}")
+                        # Delta briefings collected for sub-pages (not inline)
+                        if item.get("analysis"):
+                            self._paper_analyses.append({
+                                "title": title,
+                                "url": url,
+                                "analysis": item["analysis"],
+                            })
                     elif item.get("summary"):
                         # News item
                         url = item.get("url", "")
@@ -146,7 +157,7 @@ Content (use this exact markdown):
 After creating the page, return ONLY the page URL. Nothing else."""
 
         try:
-            response = ask_claude_sync(prompt)
+            response = ask_claude_sync(prompt, model_override="sonnet", timeout=600)
             # Extract URL from response
             for line in response.strip().split("\n"):
                 line = line.strip()
@@ -160,3 +171,36 @@ After creating the page, return ONLY the page URL. Nothing else."""
         except Exception as e:
             log.error("Claude Notion push failed: %s", e)
             return None
+
+    def _create_analysis_subpages(self, digest_url: str, analyses: list[dict]) -> None:
+        """Create sub-pages under the digest for each paper's delta briefing."""
+        # Extract page ID from URL
+        page_id = digest_url.rstrip("/").split("/")[-1].split("?")[0]
+        # Remove any title prefix (Notion URLs are like /Title-hexid)
+        if "-" in page_id:
+            page_id = page_id.split("-")[-1]
+
+        for paper in analyses:
+            title = paper.get("title", "Untitled")[:80]
+            analysis = paper.get("analysis", "")
+            url = paper.get("url", "")
+
+            prompt = f"""Create a new Notion page as a child of page ID "{page_id}".
+
+Title: "📊 {title}"
+
+Content:
+
+**Paper:** [{title}]({url})
+
+---
+
+{analysis}
+
+Return ONLY the page URL."""
+
+            try:
+                ask_claude_sync(prompt, model_override="sonnet", timeout=300)
+                log.info("  Created analysis sub-page: %s", title[:40])
+            except Exception as e:
+                log.warning("  Failed to create sub-page for %s: %s", title[:40], e)
