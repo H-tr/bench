@@ -100,29 +100,41 @@ class IntelligenceModule(BaseModule):
 
         # Use Claude to search for opportunities
         location_str = ", ".join(locations) if locations else "anywhere"
-        keyword_str = ", ".join(keywords[:5])
-        profile_ref = f"\nThe researcher's LinkedIn: {linkedin_url}" if linkedin_url else ""
+        profile_ref = f"\nLinkedIn: {linkedin_url}" if linkedin_url else ""
 
-        prompt = f"""Search for recent job/research opportunities in these areas: {keyword_str}
+        # Load knowledge profile for context on who this person is
+        from src.utils.paper_analysis import get_knowledge_profile
+        knowledge = get_knowledge_profile(self.config)
+
+        prompt = f"""First, read the researcher's profile below to understand who they are,
+their career stage, and what kind of opportunities would be relevant:
+
+{knowledge}
+{profile_ref}
+
+Now search for opportunities that FIT THIS SPECIFIC PERSON's career stage and situation.
 Preferred locations: {location_str}
-The researcher is {researcher.get('name', 'a robotics researcher')} working on robot manipulation, reasoning, and planning at NUS Singapore.{profile_ref}
 
-Look for:
-- Research scientist / postdoc positions at top labs and robotics companies
-- PhD positions at universities with strong robotics programs
-- Relevant grants or fellowships
-- Positions at companies like Physical Intelligence, Figure AI, Google DeepMind, NVIDIA, Boston Dynamics, etc.
+IMPORTANT:
+- Match opportunities to their actual career stage (student? postdoc? faculty? industry?)
+- Do NOT suggest obvious positions everyone knows about (e.g. if they're a PhD student, don't suggest senior research scientist roles at Google/NVIDIA/PI)
+- Find things they might NOT know about: niche fellowships, internships, workshops, visiting programs, competitions, grants, collaboration calls
+- Be specific about deadlines and eligibility
+- Only include things with actual URLs you've verified
 
-Return ONLY a JSON array of opportunities: [{{"title": "...", "company": "...", "url": "...", "summary": "one line why this is relevant"}}]
-Max 5 most relevant opportunities. If you can't find current listings, return [].
+Return ONLY a JSON array: [{{"title": "...", "company": "...", "url": "...", "summary": "one line why — include deadline/eligibility"}}]
+Max 5 most relevant. If nothing found, return [].
 """
 
         try:
-            response = ask_claude_sync(prompt, model_override="sonnet")
-            response = response.strip()
-            if response.startswith("```"):
-                response = response.split("\n", 1)[1].rsplit("```", 1)[0]
-            opps = json.loads(response)
+            response = ask_claude_sync(prompt, model_override="sonnet", allowed_tools=["WebFetch", "Bash"])
+            # Extract JSON
+            start = response.find("[")
+            end = response.rfind("]")
+            if start != -1 and end != -1:
+                opps = json.loads(response[start:end + 1])
+            else:
+                opps = []
         except Exception as e:
             log.error("Opportunity search failed: %s", e)
             return []

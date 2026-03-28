@@ -130,18 +130,10 @@ news:
 
 # --- Opportunities ---
 opportunities:
-  keywords:
-    - robotics researcher
-    - robot learning
-    - manipulation research
-    - TAMP
-    - postdoc robotics
-    - PhD robotics
-    - research scientist robotics
   locations:
-    - remote
-    - USA
     - Singapore
+    - remote
+    - anywhere
   linkedin_search: true
 
 # --- Personal assistant ---

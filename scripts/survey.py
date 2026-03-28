@@ -1,7 +1,7 @@
 """Auto-survey generator.
 
 Usage:
-    uv run python scripts/survey.py "task and motion planning"
+    uv run python scripts/survey.py "task and motion planning with LLMs"
     uv run python scripts/survey.py "diffusion models for robot control" --depth 30
     uv run python scripts/survey.py "video generation for robotics" --output ~/Desktop/survey.md
 """
@@ -11,27 +11,20 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import time
 from datetime import datetime
 from pathlib import Path
-from xml.etree import ElementTree
 
-import httpx
 from rich.console import Console
 from rich.logging import RichHandler
 
 console = Console()
 
-# Add project root to path
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.utils.claude import ask_claude_sync
 from src.utils.config import load_config
 from src.utils.paper_analysis import get_knowledge_profile
-
-S2_API = "https://api.semanticscholar.org/graph/v1"
-ARXIV_API = "https://export.arxiv.org/api/query"
 
 log = logging.getLogger("bench.survey")
 
@@ -46,175 +39,161 @@ def setup_logging():
 
 
 # ---------------------------------------------------------------------------
-# Phase 1: Search — cast a wide net
+# Phase 1: Sonnet searches broadly
 # ---------------------------------------------------------------------------
 
-def search_semantic_scholar(topic: str, limit: int = 50) -> list[dict]:
-    """Search Semantic Scholar for papers on a topic."""
-    papers = []
-    for offset in range(0, limit, 20):
-        try:
-            resp = httpx.get(
-                f"{S2_API}/paper/search",
-                params={
-                    "query": topic,
-                    "fields": "title,authors,url,abstract,year,citationCount,publicationDate",
-                    "limit": min(20, limit - offset),
-                    "offset": offset,
-                },
-                timeout=15,
-            )
-            if resp.status_code == 429:
-                log.warning("S2 rate limited, waiting 30s...")
-                time.sleep(30)
-                continue
-            resp.raise_for_status()
-            data = resp.json()
-            papers.extend(data.get("data", []))
-            time.sleep(3)
-        except Exception as e:
-            log.warning("S2 search failed (offset %d): %s", offset, e)
-            break
-    return papers
+def opus_search(topic: str, depth: int) -> str:
+    """Opus searches the web for relevant papers on the topic."""
+    log.info("Opus searching for papers on: %s", topic)
+
+    prompt = f"""You are a senior researcher doing a precise literature search on: "{topic}"
+
+IMPORTANT: Stay strictly on topic. Do NOT drift to adjacent popular areas.
+For example, if the topic is "LLM for task and motion planning", do NOT include VLA/visuomotor policy papers
+unless they explicitly involve symbolic planning or TAMP. Relevance to the EXACT topic matters more than popularity.
+
+Search strategy:
+1. Search Semantic Scholar and arXiv with precise queries matching the exact topic
+2. Find the seminal/foundational papers in this specific sub-area
+3. Search for key authors who work specifically on this topic
+4. Follow citation chains — check what the foundational papers cite AND what cites them
+5. Look for lesser-known but highly relevant workshop papers, not just top-venue hits
+6. Search for existing surveys on this exact topic
+
+AVOID popularity bias: a niche paper that is precisely about "{topic}" is MORE valuable
+than a famous paper that is only tangentially related.
+
+For each paper found, provide:
+- Title
+- Authors (first 3)
+- Year
+- URL (arXiv or Semantic Scholar link)
+- Citation count if available
+- Abstract or 2-3 sentence summary
+- Role: "foundational", "key_contribution", "recent", "survey", or "niche_but_relevant"
+
+Find at least {depth} papers. Ensure diversity:
+- Foundational works that defined this specific sub-area
+- Key technical contributions (not just popular, but actually advancing THIS topic)
+- Recent work (2024-2026) specifically on this topic
+- Niche/workshop papers that are directly relevant but may be less cited
+- Any existing surveys
+
+Return as a JSON array:
+[{{"title": "...", "authors": "...", "year": 2024, "url": "...", "citations": 100, "summary": "...", "role": "key_contribution"}}]"""
+
+    response = ask_claude_sync(
+        prompt,
+        timeout=600,
+        allowed_tools=["WebFetch", "Bash"],
+    )
+    return response
 
 
-def search_arxiv(topic: str, limit: int = 50) -> list[dict]:
-    """Search arXiv for papers on a topic."""
+def parse_paper_list(response: str) -> list[dict]:
+    """Extract paper list JSON from Sonnet's response."""
+    # Find JSON array in the response
+    start = response.find("[")
+    end = response.rfind("]")
+    if start == -1 or end == -1:
+        log.warning("No JSON array found in search response")
+        return []
     try:
-        resp = httpx.get(
-            ARXIV_API,
-            params={
-                "search_query": f'all:"{topic}"',
-                "start": 0,
-                "max_results": limit,
-                "sortBy": "relevance",
-                "sortOrder": "descending",
-            },
-            timeout=30,
-        )
-        if resp.status_code == 429:
-            log.warning("arXiv rate limited, waiting 30s...")
-            time.sleep(30)
-            return []
-        resp.raise_for_status()
-    except Exception as e:
-        log.warning("arXiv search failed: %s", e)
+        return json.loads(response[start:end + 1])
+    except json.JSONDecodeError:
+        # Try with markdown fence stripping
+        text = response.strip()
+        if "```" in text:
+            parts = text.split("```")
+            for part in parts:
+                part = part.strip()
+                if part.startswith("json"):
+                    part = part[4:].strip()
+                if part.startswith("["):
+                    try:
+                        return json.loads(part)
+                    except json.JSONDecodeError:
+                        continue
+        log.warning("Failed to parse paper list JSON")
         return []
 
-    ns = {"atom": "http://www.w3.org/2005/Atom"}
-    root = ElementTree.fromstring(resp.text)
 
-    papers = []
-    for entry in root.findall("atom:entry", ns):
-        title = entry.findtext("atom:title", "", ns).strip().replace("\n", " ")
-        paper_id = entry.findtext("atom:id", "", ns).strip()
-        abstract = entry.findtext("atom:summary", "", ns).strip().replace("\n", " ")
-        authors = ", ".join(
-            a.findtext("atom:name", "", ns) for a in entry.findall("atom:author", ns)
+# ---------------------------------------------------------------------------
+# Phase 1b: Gap detection
+# ---------------------------------------------------------------------------
+
+def find_gaps_and_fill(topic: str, existing_papers: list[dict], depth: int) -> list[dict]:
+    """Opus reviews the paper list, identifies gaps, and searches to fill them."""
+    titles = "\n".join(f"- {p.get('title', '')} ({p.get('year', '?')})" for p in existing_papers)
+
+    prompt = f"""You are reviewing a literature search on: "{topic}"
+
+Here are the papers found so far:
+{titles}
+
+Your task:
+1. What important sub-topics or approaches are MISSING from this list?
+2. Are there specific papers you know should be included but aren't?
+3. Are there niche but important papers (workshop papers, lesser-known but technically deep) that are missing?
+4. Are there foundational papers from adjacent fields that this topic builds on?
+
+Now search for the missing papers. Focus on filling the gaps, NOT repeating what's already found.
+Find papers that are precisely relevant to "{topic}" — not just popular papers from adjacent areas.
+
+Return as a JSON array (same format):
+[{{"title": "...", "authors": "...", "year": 2024, "url": "...", "citations": 100, "summary": "...", "role": "key_contribution"}}]
+
+If no gaps found, return []."""
+
+    try:
+        response = ask_claude_sync(
+            prompt,
+            timeout=600,
+            allowed_tools=["WebFetch", "Bash"],
         )
-        papers.append({
-            "title": title,
-            "paperId": paper_id,
-            "url": paper_id,
-            "authors": [{"name": a.strip()} for a in authors.split(",")],
-            "abstract": abstract,
-            "source": "arxiv",
-        })
-    return papers
-
-
-def deduplicate(papers: list[dict]) -> list[dict]:
-    """Deduplicate by title similarity."""
-    seen_titles = set()
-    unique = []
-    for p in papers:
-        title_key = p.get("title", "").lower().strip()[:80]
-        if title_key and title_key not in seen_titles:
-            seen_titles.add(title_key)
-            unique.append(p)
-    return unique
+        return parse_paper_list(response)
+    except Exception as e:
+        log.warning("Gap search failed: %s", e)
+        return []
 
 
 # ---------------------------------------------------------------------------
-# Phase 2: Sonnet reads and filters
+# Phase 2: Opus deep-reads key papers
 # ---------------------------------------------------------------------------
 
-def sonnet_filter(papers: list[dict], topic: str) -> list[dict]:
-    """Sonnet scores papers by relevance to the survey topic."""
-    log.info("Sonnet filtering %d papers...", len(papers))
-    scored = []
-
-    # Score in batches of 20
-    for i in range(0, len(papers), 20):
-        batch = papers[i:i + 20]
-        paper_list = ""
-        for j, p in enumerate(batch):
-            authors = ", ".join(a.get("name", "") for a in p.get("authors", [])[:3])
-            citations = p.get("citationCount", "?")
-            year = p.get("year", "?")
-            paper_list += f"\n[{j}] {p.get('title', '')} ({year}, cited {citations}x)\nAuthors: {authors}\nAbstract: {(p.get('abstract') or '')[:200]}\n"
-
-        prompt = f"""Survey topic: "{topic}"
-
-Score each paper's relevance to this survey topic (1-10).
-10 = foundational/must-cite, 7+ = clearly relevant, <5 = tangential.
-Also classify: "foundational", "key_contribution", "application", "tangential".
-
-Papers:
-{paper_list}
-
-Return ONLY JSON array: [{{"index": 0, "score": 8, "role": "foundational", "reason": "one line"}}]"""
-
-        try:
-            response = ask_claude_sync(prompt, model_override="sonnet")
-            start = response.find("[")
-            end = response.rfind("]")
-            if start != -1 and end != -1:
-                results = json.loads(response[start:end + 1])
-                for item in results:
-                    idx = item.get("index", -1)
-                    if 0 <= idx < len(batch):
-                        batch[idx]["survey_score"] = item.get("score", 0)
-                        batch[idx]["survey_role"] = item.get("role", "")
-                        batch[idx]["survey_reason"] = item.get("reason", "")
-        except Exception as e:
-            log.warning("Scoring batch failed: %s", e)
-
-        scored.extend(batch)
-
-    # Sort by score and return top papers
-    scored = [p for p in scored if p.get("survey_score", 0) >= 5]
-    scored.sort(key=lambda x: (-x.get("survey_score", 0), -x.get("citationCount", 0)))
-    return scored
-
-
-def sonnet_deep_read(papers: list[dict], topic: str, max_read: int = 15) -> list[dict]:
+def opus_deep_read(papers: list[dict], topic: str, max_read: int = 15) -> list[dict]:
     """Sonnet reads full papers and extracts key information."""
     log.info("Sonnet deep-reading top %d papers...", min(len(papers), max_read))
 
-    for p in papers[:max_read]:
+    # Prioritize: foundational first, then key, then recent
+    role_order = {"foundational": 0, "survey": 1, "key_contribution": 2, "recent": 3}
+    papers_sorted = sorted(papers, key=lambda p: (role_order.get(p.get("role", "recent"), 9), -p.get("citations", 0)))
+
+    for p in papers_sorted[:max_read]:
         url = p.get("url", "")
         title = p.get("title", "")
+        if not url:
+            continue
 
         prompt = f"""Read the full paper at: {url}
 
 Survey topic: "{topic}"
 
-After reading, extract:
+After reading the entire paper, extract:
 1. **Problem**: What specific problem does this paper address?
 2. **Approach**: What is their method? (2-3 sentences)
 3. **Key insight**: What's the novel idea that makes this work?
 4. **Results**: Main quantitative results or claims
 5. **Limitations**: What doesn't work or is unclear?
-6. **Relation to survey**: How does this fit in the landscape of "{topic}"? What did it build on, what did it enable?
+6. **Builds on**: What prior work does this directly extend?
+7. **Enabled**: What later work did this make possible?
 
-Return as structured text, not JSON. Be thorough but concise."""
+Be thorough but concise. Focus on what matters for the survey."""
 
         try:
             response = ask_claude_sync(
                 prompt,
-                model_override="sonnet",
-                timeout=300,
+                timeout=600,
                 allowed_tools=["WebFetch", "Bash"],
             )
             p["deep_read"] = response
@@ -234,7 +213,7 @@ SURVEY_PROMPT = """You are writing a research survey on: "{topic}"
 ## Researcher context (tailor the survey for them):
 {knowledge_context}
 
-## Papers collected ({n_papers} total, top {n_read} deep-read):
+## Papers collected ({n_papers} total, {n_read} deep-read):
 
 {paper_summaries}
 
@@ -288,17 +267,18 @@ def opus_synthesize(topic: str, papers: list[dict], config: dict) -> str:
     # Build paper summaries
     summaries = []
     for p in papers:
-        authors = ", ".join(a.get("name", "") for a in p.get("authors", [])[:3])
+        authors = p.get("authors", "?")
+        if isinstance(authors, list):
+            authors = ", ".join(a.get("name", str(a)) for a in authors[:3])
         year = p.get("year", "?")
-        citations = p.get("citationCount", "?")
-        score = p.get("survey_score", "?")
-        role = p.get("survey_role", "")
+        citations = p.get("citations", "?")
+        role = p.get("role", "")
 
-        entry = f"**{p.get('title', '')}** ({authors}, {year}) [citations: {citations}, relevance: {score}/10, role: {role}]"
+        entry = f"**{p.get('title', '')}** ({authors}, {year}) [citations: {citations}, role: {role}]"
+        if p.get("summary"):
+            entry += f"\nSummary: {p['summary']}"
         if p.get("deep_read"):
             entry += f"\nDeep read notes:\n{p['deep_read']}"
-        elif p.get("survey_reason"):
-            entry += f"\nNote: {p['survey_reason']}"
         summaries.append(entry)
 
     paper_text = "\n\n---\n\n".join(summaries)
@@ -319,63 +299,9 @@ def opus_synthesize(topic: str, papers: list[dict], config: dict) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Main
+# Notion push
 # ---------------------------------------------------------------------------
 
-def run_survey(topic: str, depth: int = 20, output_path: str | None = None):
-    config = load_config()
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    default_output = Path(f"~/Dropbox/bench-data/surveys/{topic.replace(' ', '_')[:40]}_{timestamp}.md").expanduser()
-    output = Path(output_path) if output_path else default_output
-    output.parent.mkdir(parents=True, exist_ok=True)
-
-    console.print(f"\n[bold]Survey: {topic}[/bold]\n")
-
-    # Phase 1: Search
-    console.print("[cyan]Phase 1: Searching...[/cyan]")
-    s2_papers = search_semantic_scholar(topic, limit=depth * 2)
-    arxiv_papers = search_arxiv(topic, limit=depth)
-    all_papers = deduplicate(s2_papers + arxiv_papers)
-    console.print(f"  Found {len(all_papers)} unique papers")
-
-    if not all_papers:
-        console.print("[red]No papers found. Try a different topic.[/red]")
-        return
-
-    # Phase 2: Sonnet filters and reads
-    console.print("[cyan]Phase 2: Sonnet filtering...[/cyan]")
-    filtered = sonnet_filter(all_papers, topic)
-    console.print(f"  {len(filtered)} papers passed relevance filter")
-
-    max_read = min(depth, len(filtered))
-    console.print(f"[cyan]Phase 2b: Sonnet deep-reading top {max_read} papers...[/cyan]")
-    read_papers = sonnet_deep_read(filtered, topic, max_read=max_read)
-
-    # Phase 3: Opus synthesizes
-    console.print("[cyan]Phase 3: Opus synthesizing survey...[/cyan]")
-    survey = opus_synthesize(topic, read_papers, config)
-
-    # Save locally
-    full_survey = f"# Survey: {topic}\n\nGenerated: {datetime.now().isoformat()}\n\n{survey}"
-    output.write_text(full_survey)
-    console.print(f"\n[green]Survey saved to: {output}[/green]")
-
-    # Save raw data
-    data_path = output.with_suffix(".json")
-    raw = [{
-        "title": p.get("title"), "url": p.get("url"), "year": p.get("year"),
-        "citations": p.get("citationCount"), "score": p.get("survey_score"),
-        "role": p.get("survey_role"), "deep_read": p.get("deep_read"),
-    } for p in read_papers]
-    data_path.write_text(json.dumps(raw, indent=2, default=str))
-    console.print(f"[green]Paper data saved to: {data_path}[/green]")
-
-    # Push to Notion — Literature & Reading Notes section
-    console.print("[cyan]Pushing to Notion...[/cyan]")
-    push_to_notion(topic, full_survey)
-
-
-# Literature & Reading Notes page ID
 NOTION_LIT_REVIEW_PAGE_ID = "31c49a6e-a20e-8133-a1ba-e4840f674106"
 
 
@@ -401,6 +327,67 @@ Return ONLY the page URL."""
         console.print("[yellow]Survey pushed but couldn't extract URL[/yellow]")
     except Exception as e:
         console.print(f"[red]Notion push failed: {e}[/red]")
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+def run_survey(topic: str, depth: int = 20, output_path: str | None = None):
+    config = load_config()
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    default_output = Path(f"~/Dropbox/bench-data/surveys/{topic.replace(' ', '_')[:40]}_{timestamp}.md").expanduser()
+    output = Path(output_path) if output_path else default_output
+    output.parent.mkdir(parents=True, exist_ok=True)
+
+    console.print(f"\n[bold]Survey: {topic}[/bold]\n")
+
+    # Phase 1: Opus searches
+    console.print("[cyan]Phase 1: Opus searching...[/cyan]")
+    search_response = opus_search(topic, depth)
+    papers = parse_paper_list(search_response)
+    console.print(f"  Round 1: found {len(papers)} papers")
+
+    if not papers:
+        console.print("[red]No papers found. Try rephrasing the topic.[/red]")
+        return
+
+    # Phase 1b: Gap detection — Opus reviews the list and searches for what's missing
+    console.print("[cyan]Phase 1b: Opus checking for gaps...[/cyan]")
+    gap_papers = find_gaps_and_fill(topic, papers, depth)
+    if gap_papers:
+        console.print(f"  Round 2: found {len(gap_papers)} additional papers")
+        papers.extend(gap_papers)
+
+    console.print(f"  Total: {len(papers)} papers")
+
+    # Phase 2: Opus deep-reads
+    max_read = min(depth, len(papers))
+    console.print(f"[cyan]Phase 2: Opus deep-reading top {max_read} papers...[/cyan]")
+    read_papers = opus_deep_read(papers, topic, max_read=max_read)
+
+    # Phase 3: Opus synthesizes
+    console.print("[cyan]Phase 3: Opus synthesizing survey...[/cyan]")
+    survey = opus_synthesize(topic, read_papers, config)
+
+    # Save locally
+    full_survey = f"# Survey: {topic}\n\nGenerated: {datetime.now().isoformat()}\n\n{survey}"
+    output.write_text(full_survey)
+    console.print(f"\n[green]Survey saved to: {output}[/green]")
+
+    # Save raw data
+    data_path = output.with_suffix(".json")
+    raw = [{
+        "title": p.get("title"), "url": p.get("url"), "year": p.get("year"),
+        "citations": p.get("citations"), "role": p.get("role"),
+        "summary": p.get("summary"), "deep_read": p.get("deep_read"),
+    } for p in read_papers]
+    data_path.write_text(json.dumps(raw, indent=2, default=str))
+    console.print(f"[green]Paper data saved to: {data_path}[/green]")
+
+    # Push to Notion
+    console.print("[cyan]Pushing to Notion...[/cyan]")
+    push_to_notion(topic, full_survey)
 
 
 def main():
