@@ -157,7 +157,12 @@ Content (use this exact markdown):
 After creating the page, return ONLY the page URL. Nothing else."""
 
         try:
-            response = ask_claude_sync(prompt, model_override="sonnet", timeout=600)
+            response = ask_claude_sync(
+                prompt,
+                model_override="sonnet",
+                timeout=600,
+                allowed_tools=["mcp__claude_ai_Notion__notion-create-pages"],
+            )
             # Extract URL from response
             for line in response.strip().split("\n"):
                 line = line.strip()
@@ -200,7 +205,12 @@ Content:
 Return ONLY the page URL."""
 
             try:
-                ask_claude_sync(prompt, model_override="sonnet", timeout=300)
+                ask_claude_sync(
+                    prompt,
+                    model_override="sonnet",
+                    timeout=300,
+                    allowed_tools=["mcp__claude_ai_Notion__notion-create-pages"],
+                )
                 log.info("  Created analysis sub-page: %s", title[:40])
             except Exception as e:
                 log.warning("  Failed to create sub-page for %s: %s", title[:40], e)

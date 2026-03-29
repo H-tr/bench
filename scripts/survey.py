@@ -319,16 +319,24 @@ Content (use this exact markdown):
 
 {survey_content}
 
-Return ONLY the page URL."""
+After creating the page, return ONLY the page URL. Nothing else."""
 
     try:
-        response = ask_claude_sync(prompt, model_override="sonnet", timeout=600)
+        response = ask_claude_sync(
+            prompt,
+            model_override="sonnet",
+            timeout=600,
+            allowed_tools=["mcp__claude_ai_Notion__notion-create-pages"],
+        )
         for line in response.strip().split("\n"):
+            line = line.strip()
             if "notion.so" in line:
-                url = line.strip().split("(")[-1].rstrip(")") if "(" in line else line.strip()
-                console.print(f"[green]Notion page: {url}[/green]")
+                if "(" in line and ")" in line:
+                    line = line.split("(")[-1].rstrip(")")
+                console.print(f"[green]Notion page: {line}[/green]")
                 return
         console.print("[yellow]Survey pushed but couldn't extract URL[/yellow]")
+        console.print(f"[dim]Claude response: {response[:300]}[/dim]")
     except Exception as e:
         console.print(f"[red]Notion push failed: {e}[/red]")
 
