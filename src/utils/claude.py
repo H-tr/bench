@@ -43,7 +43,7 @@ def ask_claude_sync(
 
     Retries up to 5 times with 1-minute waits on failure.
     """
-    cmd = ["claude", "-p", prompt]
+    cmd = ["claude", "-p", "-"]
     model = model_override or _get_model()
     if model:
         cmd.extend(["--model", model])
@@ -58,7 +58,7 @@ def ask_claude_sync(
 
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+            result = subprocess.run(cmd, input=prompt, capture_output=True, text=True, timeout=timeout)
         except subprocess.TimeoutExpired:
             log.warning("Claude CLI timed out (attempt %d/%d, %ds)", attempt, MAX_RETRIES, timeout)
             if attempt < MAX_RETRIES:
