@@ -4,6 +4,7 @@ Usage:
     uv run python scripts/survey.py "task and motion planning with LLMs"
     uv run python scripts/survey.py "diffusion models for robot control" --depth 30
     uv run python scripts/survey.py "video generation for robotics" --output ~/Desktop/survey.md
+    uv run python scripts/survey.py "robot control" --provider codex
 """
 
 from __future__ import annotations
@@ -23,8 +24,20 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.utils.claude import ask_claude_sync
+from src.utils.codex import ask_codex_sync
 from src.utils.config import load_config
 from src.utils.paper_analysis import get_knowledge_profile
+
+# ---------------------------------------------------------------------------
+# Provider abstraction
+# ---------------------------------------------------------------------------
+
+def _ask(prompt: str, provider: str, *, timeout: int = 600, allowed_tools: list[str] | None = None) -> str:
+    """Route a prompt to the selected provider."""
+    if provider == "codex":
+        return ask_codex_sync(prompt, timeout=timeout)
+    # default: claude
+    return ask_claude_sync(prompt, timeout=timeout, allowed_tools=allowed_tools)
 
 log = logging.getLogger("bench.survey")
 
@@ -59,9 +72,9 @@ Return ONLY a JSON array:
 [{{"title": "...", "authors": "...", "year": 2024, "url": "...", "citations": 100, "summary": "...", "role": "key_contribution"}}]"""
 
 
-def opus_search(topic: str, depth: int) -> str:
-    """Opus searches in multiple focused rounds to avoid timeout."""
-    log.info("Opus searching for papers on: %s", topic)
+def opus_search(topic: str, depth: int, provider: str = "claude") -> str:
+    """Searches in multiple focused rounds to avoid timeout."""
+    log.info("[%s] Searching for papers on: %s", provider, topic)
 
     # Split into focused sub-searches so each call is manageable
     focuses = [
@@ -79,11 +92,7 @@ def opus_search(topic: str, depth: int) -> str:
         prompt = SEARCH_PROMPT.format(topic=topic, focus=focus, count=per_focus)
 
         try:
-            response = ask_claude_sync(
-                prompt,
-                timeout=600,
-                allowed_tools=["WebFetch", "Bash"],
-            )
+            response = _ask(prompt, provider, timeout=600, allowed_tools=["WebFetch", "Bash"])
             papers = parse_paper_list(response)
             log.info("    Found %d papers", len(papers))
             all_papers.extend(papers)
@@ -126,8 +135,8 @@ def parse_paper_list(response: str) -> list[dict]:
 # Phase 1b: Gap detection
 # ---------------------------------------------------------------------------
 
-def find_gaps_and_fill(topic: str, existing_papers: list[dict], depth: int) -> list[dict]:
-    """Opus reviews the paper list, identifies gaps, and searches to fill them."""
+def find_gaps_and_fill(topic: str, existing_papers: list[dict], depth: int, provider: str = "claude") -> list[dict]:
+    """Reviews the paper list, identifies gaps, and searches to fill them."""
     titles = "\n".join(f"- {p.get('title', '')} ({p.get('year', '?')})" for p in existing_papers)
 
     prompt = f"""You are reviewing a literature search on: "{topic}"
@@ -150,11 +159,7 @@ Return as a JSON array (same format):
 If no gaps found, return []."""
 
     try:
-        response = ask_claude_sync(
-            prompt,
-            timeout=600,
-            allowed_tools=["WebFetch", "Bash"],
-        )
+        response = _ask(prompt, provider, timeout=600, allowed_tools=["WebFetch", "Bash"])
         return parse_paper_list(response)
     except Exception as e:
         log.warning("Gap search failed: %s", e)
@@ -165,9 +170,9 @@ If no gaps found, return []."""
 # Phase 2: Opus deep-reads key papers
 # ---------------------------------------------------------------------------
 
-def opus_deep_read(papers: list[dict], topic: str, max_read: int = 15) -> list[dict]:
-    """Sonnet reads full papers and extracts key information."""
-    log.info("Sonnet deep-reading top %d papers...", min(len(papers), max_read))
+def opus_deep_read(papers: list[dict], topic: str, max_read: int = 15, provider: str = "claude") -> list[dict]:
+    """Deep-reads full papers and extracts key information."""
+    log.info("[%s] Deep-reading top %d papers...", provider, min(len(papers), max_read))
 
     # Prioritize: foundational first, then key, then recent
     role_order = {"foundational": 0, "survey": 1, "key_contribution": 2, "recent": 3}
@@ -195,11 +200,7 @@ After reading the entire paper, extract:
 Be thorough but concise. Focus on what matters for the survey."""
 
         try:
-            response = ask_claude_sync(
-                prompt,
-                timeout=600,
-                allowed_tools=["WebFetch", "Bash"],
-            )
+            response = _ask(prompt, provider, timeout=600, allowed_tools=["WebFetch", "Bash"])
             p["deep_read"] = response
             log.info("  Read: %s", title[:60])
         except Exception as e:
@@ -262,9 +263,9 @@ Use this structure:
 - Be thorough but not padded — every sentence should earn its place"""
 
 
-def opus_synthesize(topic: str, papers: list[dict], config: dict) -> str:
-    """Opus synthesizes all paper readings into a coherent survey."""
-    log.info("Opus synthesizing survey...")
+def opus_synthesize(topic: str, papers: list[dict], config: dict, provider: str = "claude") -> str:
+    """Synthesizes all paper readings into a coherent survey."""
+    log.info("[%s] Synthesizing survey...", provider)
 
     knowledge = get_knowledge_profile(config)
 
@@ -295,11 +296,7 @@ def opus_synthesize(topic: str, papers: list[dict], config: dict) -> str:
         paper_summaries=paper_text,
     )
 
-    return ask_claude_sync(
-        prompt,
-        timeout=600,
-        allowed_tools=["WebFetch", "Bash"],
-    )
+    return _ask(prompt, provider, timeout=600, allowed_tools=["WebFetch", "Bash"])
 
 
 # ---------------------------------------------------------------------------
@@ -345,18 +342,18 @@ After creating the page, return ONLY the page URL. Nothing else."""
 # Main
 # ---------------------------------------------------------------------------
 
-def run_survey(topic: str, depth: int = 20, output_path: str | None = None):
+def run_survey(topic: str, depth: int = 20, output_path: str | None = None, provider: str = "claude"):
     config = load_config()
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     default_output = Path(f"~/Dropbox/bench-data/surveys/{topic.replace(' ', '_')[:40]}_{timestamp}.md").expanduser()
     output = Path(output_path) if output_path else default_output
     output.parent.mkdir(parents=True, exist_ok=True)
 
-    console.print(f"\n[bold]Survey: {topic}[/bold]\n")
+    console.print(f"\n[bold]Survey: {topic}[/bold] [dim](provider: {provider})[/dim]\n")
 
-    # Phase 1: Opus searches (multiple focused rounds)
-    console.print("[cyan]Phase 1: Opus searching...[/cyan]")
-    search_response = opus_search(topic, depth)
+    # Phase 1: searches (multiple focused rounds)
+    console.print(f"[cyan]Phase 1: [{provider}] searching...[/cyan]")
+    search_response = opus_search(topic, depth, provider=provider)
     papers = parse_paper_list(search_response)
     # Deduplicate across rounds
     seen_titles = set()
@@ -373,23 +370,23 @@ def run_survey(topic: str, depth: int = 20, output_path: str | None = None):
         console.print("[red]No papers found. Try rephrasing the topic.[/red]")
         return
 
-    # Phase 1b: Gap detection — Opus reviews the list and searches for what's missing
-    console.print("[cyan]Phase 1b: Opus checking for gaps...[/cyan]")
-    gap_papers = find_gaps_and_fill(topic, papers, depth)
+    # Phase 1b: Gap detection
+    console.print(f"[cyan]Phase 1b: [{provider}] checking for gaps...[/cyan]")
+    gap_papers = find_gaps_and_fill(topic, papers, depth, provider=provider)
     if gap_papers:
         console.print(f"  Round 2: found {len(gap_papers)} additional papers")
         papers.extend(gap_papers)
 
     console.print(f"  Total: {len(papers)} papers")
 
-    # Phase 2: Opus deep-reads
+    # Phase 2: deep-reads
     max_read = min(depth, len(papers))
-    console.print(f"[cyan]Phase 2: Opus deep-reading top {max_read} papers...[/cyan]")
-    read_papers = opus_deep_read(papers, topic, max_read=max_read)
+    console.print(f"[cyan]Phase 2: [{provider}] deep-reading top {max_read} papers...[/cyan]")
+    read_papers = opus_deep_read(papers, topic, max_read=max_read, provider=provider)
 
-    # Phase 3: Opus synthesizes
-    console.print("[cyan]Phase 3: Opus synthesizing survey...[/cyan]")
-    survey = opus_synthesize(topic, read_papers, config)
+    # Phase 3: synthesize
+    console.print(f"[cyan]Phase 3: [{provider}] synthesizing survey...[/cyan]")
+    survey = opus_synthesize(topic, read_papers, config, provider=provider)
 
     # Save locally
     full_survey = f"# Survey: {topic}\n\nGenerated: {datetime.now().isoformat()}\n\n{survey}"
@@ -416,10 +413,16 @@ def main():
     parser.add_argument("topic", help="Survey topic (e.g. 'task and motion planning')")
     parser.add_argument("--depth", type=int, default=20, help="How many papers to deep-read (default: 20)")
     parser.add_argument("--output", "-o", help="Output file path (default: ~/Dropbox/bench-data/surveys/)")
+    parser.add_argument(
+        "--provider",
+        choices=["claude", "codex"],
+        default="claude",
+        help="LLM provider to use: 'claude' (default) or 'codex'",
+    )
     args = parser.parse_args()
 
     setup_logging()
-    run_survey(args.topic, depth=args.depth, output_path=args.output)
+    run_survey(args.topic, depth=args.depth, output_path=args.output, provider=args.provider)
 
 
 if __name__ == "__main__":

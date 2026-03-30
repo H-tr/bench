@@ -145,7 +145,6 @@ class AssistantModule(BaseModule):
             f"List all my calendar events for today ({today}). "
             f"For each event show: time, title, and location/link if any. "
             f"Format as a compact list. If no events, say 'No events today.'",
-            model_override="sonnet",
         )
         if not response or "error" in response.lower()[:50]:
             return None
@@ -160,7 +159,6 @@ class AssistantModule(BaseModule):
             f"Show the top {max_items} emails: sender, subject, and a one-line summary of what action is needed (if any). "
             f"Skip newsletters and automated notifications unless they're urgent. "
             f"Format as a compact list.",
-            model_override="sonnet",
         )
         if not response or "error" in response.lower()[:50]:
             return None
@@ -181,7 +179,6 @@ class AssistantModule(BaseModule):
             f"2. Who is presenting this week?\n"
             f"3. Any upcoming presentations by {name} in the next 2 weeks?\n\n"
             f"Today is {today}. Be concise.",
-            model_override="sonnet",
         )
         if not response or "error" in response.lower()[:50]:
             return None
@@ -202,7 +199,6 @@ class AssistantModule(BaseModule):
             f"2. Who is presenting this week and what paper?\n"
             f"3. Any upcoming slots for {name} in the next 2 weeks?\n\n"
             f"Today is {today}. Be concise.",
-            model_override="sonnet",
         )
         if not response or "error" in response.lower()[:50]:
             return None

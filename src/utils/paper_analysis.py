@@ -108,9 +108,8 @@ This profile will be used to personalize paper analysis: things in this profile 
 (the researcher already knows them), so only genuinely NEW information gets highlighted."""
 
     try:
-        # Use sonnet for this — it's a data-gathering task, not deep analysis.
         # Longer timeout since it needs to search + fetch Notion pages.
-        profile = ask_claude_sync(prompt, model_override="sonnet", timeout=600)
+        profile = ask_claude_sync(prompt, timeout=1800)
         # Save to file
         KNOWLEDGE_PROFILE_PATH.parent.mkdir(parents=True, exist_ok=True)
         KNOWLEDGE_PROFILE_PATH.write_text(profile)

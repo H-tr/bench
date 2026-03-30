@@ -159,8 +159,7 @@ After creating the page, return ONLY the page URL. Nothing else."""
         try:
             response = ask_claude_sync(
                 prompt,
-                model_override="sonnet",
-                timeout=600,
+                timeout=1800,
                 allowed_tools=["mcp__claude_ai_Notion__notion-create-pages"],
             )
             # Extract URL from response
@@ -207,7 +206,6 @@ Return ONLY the page URL."""
             try:
                 ask_claude_sync(
                     prompt,
-                    model_override="sonnet",
                     timeout=300,
                     allowed_tools=["mcp__claude_ai_Notion__notion-create-pages"],
                 )

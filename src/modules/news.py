@@ -133,7 +133,7 @@ If no articles found, return exactly: []
 HTML snippet:
 {text}"""
 
-            response = ask_claude_sync(prompt, model_override="sonnet")
+            response = ask_claude_sync(prompt)
             articles = _extract_json_array(response)
 
             return [
@@ -175,7 +175,7 @@ Return ONLY valid JSON array: [{{"index": 0, "summary": "one line", "relevant": 
 Only include items where relevant=true."""
 
         try:
-            response = ask_claude_sync(prompt, model_override="sonnet")
+            response = ask_claude_sync(prompt)
             scored = _extract_json_array(response)
             if not scored:
                 log.warning("Claude news filter returned no valid JSON, passing items through")

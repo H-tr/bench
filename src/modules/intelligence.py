@@ -127,7 +127,7 @@ Max 5 most relevant. If nothing found, return [].
 """
 
         try:
-            response = ask_claude_sync(prompt, model_override="sonnet", allowed_tools=["WebFetch", "Bash"])
+            response = ask_claude_sync(prompt, allowed_tools=["WebFetch", "Bash"])
             # Extract JSON
             start = response.find("[")
             end = response.rfind("]")

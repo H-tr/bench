@@ -69,6 +69,9 @@ tracked_authors:
   - name: "Joshua Tenenbaum"
     affiliation: "MIT"
     semantic_scholar_id: "2137828528"
+  - name: "Panpan Cai"
+    affiliation: "Shanghai Jiao Tong University"
+    semantic_scholar_id: ""         # TODO: fill in from semanticscholar.org/search?term=Panpan+Cai
 
 # --- Tracked institutions/labs ---
 tracked_institutions:
@@ -180,6 +183,10 @@ paths:
 # --- Claude model ---
 claude:
   model: "opus"               # opus, sonnet, or haiku
+
+# --- Codex model (OpenAI Codex CLI: npm install -g @openai/codex) ---
+codex:
+  model: "gpt-5.4"            # gpt-5.4 (max), or other OpenAI models supported by codex CLI
 
 # --- Schedule ---
 schedule:

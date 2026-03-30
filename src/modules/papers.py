@@ -111,7 +111,7 @@ class PapersModule(BaseModule):
         if not new_papers:
             return self._result(items=[{"text": "No new papers today."}])
 
-        # 3. STAGE 1: Fast pre-filter with abstracts (sonnet, no web)
+        # 3. STAGE 1: Fast pre-filter with abstracts (no web)
         log.info("  Stage 1: Pre-filtering %d papers by abstract...", len(new_papers))
         scored = self._score_papers_batched(new_papers, cfg)
 
@@ -124,9 +124,9 @@ class PapersModule(BaseModule):
         candidates = sorted(candidates, key=lambda x: x.get("score", 0), reverse=True)[:15]
         log.info("  Stage 1: %d candidates passed pre-filter", len(candidates))
 
-        # 4. STAGE 2: Deep-read candidates — sonnet reads full paper via web
+        # 4. STAGE 2: Deep-read candidates — reads full paper via web
         if candidates:
-            log.info("  Stage 2: Sonnet reading %d full papers...", len(candidates))
+            log.info("  Stage 2: Reading %d full papers...", len(candidates))
             self._deep_score_papers(candidates, cfg)
 
         threshold = cfg.get("relevance_threshold", 7)
@@ -331,7 +331,7 @@ class PapersModule(BaseModule):
 
         prompt = f"""Score each paper 1-10 for {researcher_name} who works on: {', '.join(keywords[:6])}.
 
-7+ = genuinely want to read. Papers by tracked authors get a bonus.
+7+ = genuinely want to read. Papers marked [TRACKED AUTHOR] are from key researchers to follow — score them at least 7 unless the topic is completely unrelated, and prioritize them in the final ranking.
 Write a one-line summary: what they did + why it matters.
 
 {paper_list}
@@ -339,7 +339,7 @@ Write a one-line summary: what they did + why it matters.
 Return ONLY a JSON array: [{{"index": 0, "score": 7, "summary": "one line"}}]"""
 
         try:
-            response = ask_claude_sync(prompt, model_override="sonnet")
+            response = ask_claude_sync(prompt)
             scores = _extract_json_array(response)
             if not scores:
                 raise ValueError("No valid JSON array in response")
@@ -358,7 +358,7 @@ Return ONLY a JSON array: [{{"index": 0, "score": 7, "summary": "one line"}}]"""
                 papers[idx]["summary"] = item.get("summary", papers[idx]["title"])
 
     def _deep_score_papers(self, papers: list[dict], cfg: dict) -> None:
-        """Stage 2: Sonnet reads each full paper via web and re-scores. Modifies papers in place."""
+        """Stage 2: Reads each full paper via web and re-scores. Modifies papers in place."""
         researcher_name = self.config.get("researcher", {}).get("name", "a robotics researcher")
         keywords = cfg.get("keywords", [])
 
@@ -368,7 +368,8 @@ Return ONLY a JSON array: [{{"index": 0, "score": 7, "summary": "one line"}}]"""
             if not url:
                 continue
 
-            prompt = f"""You are scoring a paper for {researcher_name} who works on: {', '.join(keywords[:6])}.
+            tracked_note = f"\nNOTE: This paper is by a tracked author ({p['tracked_author']}) — score at least 7 unless completely off-topic." if p.get("tracked_author") else ""
+            prompt = f"""You are scoring a paper for {researcher_name} who works on: {', '.join(keywords[:6])}.{tracked_note}
 
 Fetch and READ the full paper at: {url}
 
@@ -382,7 +383,6 @@ Return ONLY valid JSON: {{"score": 8, "summary": "one line", "novelty": "increme
             try:
                 response = ask_claude_sync(
                     prompt,
-                    model_override="sonnet",
                     timeout=300,
                     allowed_tools=["WebFetch", "Bash"],
                 )
