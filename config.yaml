@@ -180,6 +180,56 @@ digest:
 paths:
   dropbox_data: "~/Dropbox/bench-data"
 
+# --- Survey ---
+survey:
+  # Notable research groups to check during literature search.
+  # Used as anchors, NOT as an exclusive filter — the survey also searches
+  # broadly for work from smaller/newer groups beyond this list.
+  notable_groups:
+    # North America
+    - "Leslie Kaelbling (MIT)"
+    - "Tomas Lozano-Perez (MIT)"
+    - "Russ Tedrake (MIT)"
+    - "Kaiming He (MIT)"
+    - "Dieter Fox (UW / NVIDIA)"
+    - "Siddhartha Srinivasa (UW)"
+    - "Pieter Abbeel (UC Berkeley)"
+    - "Sergey Levine (UC Berkeley)"
+    - "Shuran Song (Stanford)"
+    - "Jeannette Bohg (Stanford)"
+    - "Jiajun Wu (Stanford)"
+    - "Lydia Kavraki (Rice)"
+    - "Hadas Kress-Gazit (Cornell)"
+    - "Sanjiban Choudhury (Cornell)"
+    - "Vijay Kumar (UPenn)"
+    - "Dinesh Jayaraman (UPenn)"
+    - "Sonia Chernova (Georgia Tech)"
+    - "Danfei Xu (Georgia Tech)"
+    - "Yuke Zhu (UT Austin)"
+    - "Roberto Martín-Martín (UT Austin)"
+    - "Oliver Kroemer (CMU)"
+    - "Deepak Pathak (CMU)"
+    - "David Held (CMU)"
+    # Europe
+    - "Marc Toussaint (TU Berlin)"
+    - "Danica Kragic (KTH)"
+    - "Edward Johns (Imperial)"
+    - "Ingmar Posner (Oxford)"
+    - "Davide Scaramuzza (UZH)"
+    - "Marco Hutter (ETH Zurich)"
+    - "Wolfram Burgard (TU Nuremberg)"
+    # Singapore
+    - "David Hsu (NUS)"
+    - "Harold Soh (NUS)"
+    # China & Hong Kong
+    - "Panpan Cai (SJTU)"
+    - "Boyu Zhou (SUSTech)"
+    - "Gao Fei (Zhejiang University)"
+    - "Shaojie Shen (HKUST)"
+    - "Fu Zhang (HKU)"
+    - "Cewu Lu (SJTU)"
+
+
 # --- Claude model ---
 claude:
   model: "opus"               # opus, sonnet, or haiku

@@ -32,7 +32,7 @@ from src.utils.paper_analysis import get_knowledge_profile
 # Provider abstraction
 # ---------------------------------------------------------------------------
 
-def _ask(prompt: str, provider: str, *, timeout: int = 600, allowed_tools: list[str] | None = None) -> str:
+def _ask(prompt: str, provider: str, *, timeout: int = 1800, allowed_tools: list[str] | None = None) -> str:
     """Route a prompt to the selected provider."""
     if provider == "codex":
         return ask_codex_sync(prompt, timeout=timeout)
@@ -72,9 +72,22 @@ Return ONLY a JSON array:
 [{{"title": "...", "authors": "...", "year": 2024, "url": "...", "citations": 100, "summary": "...", "role": "key_contribution"}}]"""
 
 
+def _get_notable_groups() -> list[str]:
+    """Load notable research groups from config."""
+    try:
+        config = load_config()
+        return config.get("survey", {}).get("notable_groups", [])
+    except Exception:
+        return []
+
+
 def opus_search(topic: str, depth: int, provider: str = "claude") -> str:
     """Searches in multiple focused rounds to avoid timeout."""
     log.info("[%s] Searching for papers on: %s", provider, topic)
+
+    # Build the group-aware search focus
+    groups = _get_notable_groups()
+    group_names = ", ".join(groups[:15]) if groups else "major robotics/AI labs worldwide"
 
     # Split into focused sub-searches so each call is manageable
     focuses = [
@@ -82,6 +95,12 @@ def opus_search(topic: str, depth: int, provider: str = "claude") -> str:
         f"key technical contributions and methods (2020-2024) in {topic}",
         f"most recent work (2024-2026) and state-of-the-art in {topic}",
         f"niche, lesser-known, or workshop papers specifically about {topic} — avoid popular/obvious ones",
+        (
+            f"papers on {topic} from a diverse range of research groups worldwide, "
+            f"including but not limited to: {group_names}. "
+            f"Do NOT only search for big-name labs — also look for good work from "
+            f"smaller or newer groups. Search broadly across English AND Chinese venues."
+        ),
     ]
 
     all_papers = []
@@ -92,7 +111,7 @@ def opus_search(topic: str, depth: int, provider: str = "claude") -> str:
         prompt = SEARCH_PROMPT.format(topic=topic, focus=focus, count=per_focus)
 
         try:
-            response = _ask(prompt, provider, timeout=600, allowed_tools=["WebFetch", "Bash"])
+            response = _ask(prompt, provider, timeout=1800, allowed_tools=["WebFetch", "Bash"])
             papers = parse_paper_list(response)
             log.info("    Found %d papers", len(papers))
             all_papers.extend(papers)
@@ -104,16 +123,21 @@ def opus_search(topic: str, depth: int, provider: str = "claude") -> str:
 
 
 def parse_paper_list(response: str) -> list[dict]:
-    """Extract paper list JSON from Sonnet's response."""
+    """Extract paper list JSON from response."""
+    if not response or not response.strip():
+        log.warning("Empty response from LLM")
+        return []
+
     # Find JSON array in the response
     start = response.find("[")
     end = response.rfind("]")
     if start == -1 or end == -1:
-        log.warning("No JSON array found in search response")
+        log.warning("No JSON array found in search response. First 500 chars:\n%s", response[:500])
         return []
     try:
         return json.loads(response[start:end + 1])
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as e:
+        log.warning("JSON parse failed: %s", e)
         # Try with markdown fence stripping
         text = response.strip()
         if "```" in text:
@@ -127,7 +151,7 @@ def parse_paper_list(response: str) -> list[dict]:
                         return json.loads(part)
                     except json.JSONDecodeError:
                         continue
-        log.warning("Failed to parse paper list JSON")
+        log.warning("All JSON parse attempts failed. First 500 chars:\n%s", response[:500])
         return []
 
 
@@ -135,34 +159,77 @@ def parse_paper_list(response: str) -> list[dict]:
 # Phase 1b: Gap detection
 # ---------------------------------------------------------------------------
 
-def find_gaps_and_fill(topic: str, existing_papers: list[dict], depth: int, provider: str = "claude") -> list[dict]:
-    """Reviews the paper list, identifies gaps, and searches to fill them."""
-    titles = "\n".join(f"- {p.get('title', '')} ({p.get('year', '?')})" for p in existing_papers)
-
-    prompt = f"""You are reviewing a literature search on: "{topic}"
+GAP_ANALYSIS_PROMPT = """You are reviewing a literature search on: "{topic}"
 
 Here are the papers found so far:
 {titles}
 
 Your task:
 1. What important sub-topics or approaches are MISSING from this list?
-2. Are there specific papers you know should be included but aren't?
-3. Are there niche but important papers (workshop papers, lesser-known but technically deep) that are missing?
-4. Are there foundational papers from adjacent fields that this topic builds on?
+2. Are there niche but important angles (workshop papers, lesser-known but technically deep) that are missing?
+3. Are there foundational papers from adjacent fields that this topic builds on?
 
-Now search for the missing papers. Focus on filling the gaps, NOT repeating what's already found.
-Find papers that are precisely relevant to "{topic}" — not just popular papers from adjacent areas.
+Return ONLY a JSON array of 2-4 short search focus strings that describe the missing areas.
+Example: ["reinforcement learning approaches to X", "sim-to-real transfer for X"]
 
-Return as a JSON array (same format):
-[{{"title": "...", "authors": "...", "year": 2024, "url": "...", "citations": 100, "summary": "...", "role": "key_contribution"}}]
+If no significant gaps, return []."""
 
-If no gaps found, return []."""
 
+def find_gaps_and_fill(topic: str, existing_papers: list[dict], depth: int, provider: str = "claude") -> list[dict]:
+    """Reviews the paper list, identifies gaps, and searches to fill them.
+
+    Split into two lightweight steps:
+    1. Fast gap analysis (no tools, short timeout) to identify missing sub-topics.
+    2. Reuse SEARCH_PROMPT with those gap topics as focuses.
+    """
+    titles = "\n".join(f"- {p.get('title', '')} ({p.get('year', '?')})" for p in existing_papers)
+
+    # Step 1: Identify gaps (no tools needed, short timeout)
+    prompt = GAP_ANALYSIS_PROMPT.format(topic=topic, titles=titles)
     try:
-        response = _ask(prompt, provider, timeout=600, allowed_tools=["WebFetch", "Bash"])
-        return parse_paper_list(response)
+        response = _ask(prompt, provider, timeout=300)
     except Exception as e:
-        log.warning("Gap search failed: %s", e)
+        log.warning("Gap analysis failed: %s", e)
+        return []
+
+    # Parse the gap focus strings
+    gap_focuses = _parse_gap_focuses(response)
+    if not gap_focuses:
+        log.info("No gaps identified")
+        return []
+
+    log.info("Identified %d gap areas: %s", len(gap_focuses), gap_focuses)
+
+    # Step 2: Search for papers in each gap area using existing search infra
+    all_gap_papers = []
+    per_focus = max(5, depth // (len(gap_focuses) * 2))
+
+    for i, focus in enumerate(gap_focuses):
+        log.info("  Gap search %d/%d: %s", i + 1, len(gap_focuses), focus[:60])
+        search_prompt = SEARCH_PROMPT.format(topic=topic, focus=focus, count=per_focus)
+        try:
+            response = _ask(search_prompt, provider, timeout=900, allowed_tools=["WebFetch", "Bash"])
+            papers = parse_paper_list(response)
+            log.info("    Found %d papers", len(papers))
+            all_gap_papers.extend(papers)
+        except Exception as e:
+            log.warning("    Gap search round %d failed: %s", i + 1, e)
+
+    return all_gap_papers
+
+
+def _parse_gap_focuses(response: str) -> list[str]:
+    """Extract gap focus strings from the analysis response."""
+    start = response.find("[")
+    end = response.rfind("]")
+    if start == -1 or end == -1:
+        return []
+    try:
+        result = json.loads(response[start:end + 1])
+        if isinstance(result, list) and all(isinstance(s, str) for s in result):
+            return result[:4]  # Cap at 4 focuses
+        return []
+    except json.JSONDecodeError:
         return []
 
 
@@ -170,13 +237,38 @@ If no gaps found, return []."""
 # Phase 2: Opus deep-reads key papers
 # ---------------------------------------------------------------------------
 
+def _citation_count(value: object) -> int:
+    """Return a sortable citation count from model-produced paper metadata."""
+    if value is None:
+        return 0
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, (int, float)):
+        return int(value)
+    if isinstance(value, str):
+        normalized = value.strip().replace(",", "")
+        if not normalized:
+            return 0
+        try:
+            return int(float(normalized))
+        except ValueError:
+            return 0
+    return 0
+
+
 def opus_deep_read(papers: list[dict], topic: str, max_read: int = 15, provider: str = "claude") -> list[dict]:
     """Deep-reads full papers and extracts key information."""
     log.info("[%s] Deep-reading top %d papers...", provider, min(len(papers), max_read))
 
     # Prioritize: foundational first, then key, then recent
     role_order = {"foundational": 0, "survey": 1, "key_contribution": 2, "recent": 3}
-    papers_sorted = sorted(papers, key=lambda p: (role_order.get(p.get("role", "recent"), 9), -p.get("citations", 0)))
+    papers_sorted = sorted(
+        papers,
+        key=lambda p: (
+            role_order.get(p.get("role", "recent"), 9),
+            -_citation_count(p.get("citations")),
+        ),
+    )
 
     for p in papers_sorted[:max_read]:
         url = p.get("url", "")
@@ -200,7 +292,7 @@ After reading the entire paper, extract:
 Be thorough but concise. Focus on what matters for the survey."""
 
         try:
-            response = _ask(prompt, provider, timeout=600, allowed_tools=["WebFetch", "Bash"])
+            response = _ask(prompt, provider, timeout=1800, allowed_tools=["WebFetch", "Bash"])
             p["deep_read"] = response
             log.info("  Read: %s", title[:60])
         except Exception as e:
@@ -260,7 +352,8 @@ Use this structure:
 - Use the deep-read summaries for papers you have them for
 - Cite papers as [AuthorLastName et al., Year]
 - Include a references section at the end
-- Be thorough but not padded — every sentence should earn its place"""
+- Be thorough but not padded — every sentence should earn its place
+- IMPORTANT: Output the FULL survey text directly in your response. Do NOT use any file-writing tools. Just print the entire markdown survey as your answer."""
 
 
 def opus_synthesize(topic: str, papers: list[dict], config: dict, provider: str = "claude") -> str:
@@ -296,7 +389,7 @@ def opus_synthesize(topic: str, papers: list[dict], config: dict, provider: str 
         paper_summaries=paper_text,
     )
 
-    return _ask(prompt, provider, timeout=600, allowed_tools=["WebFetch", "Bash"])
+    return _ask(prompt, provider, timeout=1800, allowed_tools=["WebFetch", "Bash"])
 
 
 # ---------------------------------------------------------------------------
@@ -322,7 +415,7 @@ After creating the page, return ONLY the page URL. Nothing else."""
         response = ask_claude_sync(
             prompt,
             model_override="sonnet",
-            timeout=600,
+            timeout=1800,
             allowed_tools=["mcp__claude_ai_Notion__notion-create-pages"],
         )
         for line in response.strip().split("\n"):
@@ -342,7 +435,47 @@ After creating the page, return ONLY the page URL. Nothing else."""
 # Main
 # ---------------------------------------------------------------------------
 
-def run_survey(topic: str, depth: int = 20, output_path: str | None = None, provider: str = "claude"):
+def _checkpoint_dir(topic: str) -> Path:
+    """Return the checkpoint directory for a given topic."""
+    slug = topic.replace(" ", "_")[:40]
+    d = Path(f"~/Dropbox/bench-data/surveys/.checkpoints/{slug}").expanduser()
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _save_checkpoint(topic: str, phase: str, data: object) -> None:
+    """Save intermediate results to a checkpoint file."""
+    path = _checkpoint_dir(topic) / f"{phase}.json"
+    path.write_text(json.dumps(data, indent=2, default=str))
+    log.info("Checkpoint saved: %s", path)
+
+
+def _load_checkpoint(topic: str, phase: str) -> object | None:
+    """Load a checkpoint file if it exists."""
+    path = _checkpoint_dir(topic) / f"{phase}.json"
+    if path.exists():
+        try:
+            data = json.loads(path.read_text())
+            log.info("Checkpoint loaded: %s (%s)", phase, path)
+            return data
+        except (json.JSONDecodeError, OSError) as e:
+            log.warning("Corrupt checkpoint %s, re-running: %s", path, e)
+    return None
+
+
+def _dedup_papers(papers: list[dict]) -> list[dict]:
+    """Deduplicate papers by title."""
+    seen = set()
+    unique = []
+    for p in papers:
+        key = p.get("title", "").lower().strip()[:80]
+        if key and key not in seen:
+            seen.add(key)
+            unique.append(p)
+    return unique
+
+
+def run_survey(topic: str, depth: int = 20, output_path: str | None = None, provider: str = "claude", skip_gaps: bool = False):
     config = load_config()
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     default_output = Path(f"~/Dropbox/bench-data/surveys/{topic.replace(' ', '_')[:40]}_{timestamp}.md").expanduser()
@@ -351,49 +484,66 @@ def run_survey(topic: str, depth: int = 20, output_path: str | None = None, prov
 
     console.print(f"\n[bold]Survey: {topic}[/bold] [dim](provider: {provider})[/dim]\n")
 
-    # Phase 1: searches (multiple focused rounds)
-    console.print(f"[cyan]Phase 1: [{provider}] searching...[/cyan]")
-    search_response = opus_search(topic, depth, provider=provider)
-    papers = parse_paper_list(search_response)
-    # Deduplicate across rounds
-    seen_titles = set()
-    unique = []
-    for p in papers:
-        key = p.get("title", "").lower().strip()[:80]
-        if key and key not in seen_titles:
-            seen_titles.add(key)
-            unique.append(p)
-    papers = unique
-    console.print(f"  Found {len(papers)} unique papers across all rounds")
+    # ── Phase 1: search ──────────────────────────────────────────────
+    papers = _load_checkpoint(topic, "phase1_papers")
+    if papers is not None:
+        console.print(f"[dim]Phase 1: loaded {len(papers)} papers from checkpoint[/dim]")
+    else:
+        console.print(f"[cyan]Phase 1: [{provider}] searching...[/cyan]")
+        search_response = opus_search(topic, depth, provider=provider)
+        papers = parse_paper_list(search_response)
+        papers = _dedup_papers(papers)
+        console.print(f"  Found {len(papers)} unique papers across all rounds")
+        _save_checkpoint(topic, "phase1_papers", papers)
 
     if not papers:
         console.print("[red]No papers found. Try rephrasing the topic.[/red]")
         return
 
-    # Phase 1b: Gap detection
-    console.print(f"[cyan]Phase 1b: [{provider}] checking for gaps...[/cyan]")
-    gap_papers = find_gaps_and_fill(topic, papers, depth, provider=provider)
+    # ── Phase 1b: gap detection ──────────────────────────────────────
+    gap_papers = _load_checkpoint(topic, "phase1b_gaps")
+    if gap_papers is not None:
+        console.print(f"[dim]Phase 1b: loaded {len(gap_papers)} gap papers from checkpoint[/dim]")
+    elif skip_gaps:
+        console.print("[dim]Phase 1b: skipped (--skip-gaps)[/dim]")
+        gap_papers = []
+        _save_checkpoint(topic, "phase1b_gaps", gap_papers)
+    else:
+        console.print(f"[cyan]Phase 1b: [{provider}] checking for gaps...[/cyan]")
+        gap_papers = find_gaps_and_fill(topic, papers, depth, provider=provider)
+        _save_checkpoint(topic, "phase1b_gaps", gap_papers)
+
     if gap_papers:
-        console.print(f"  Round 2: found {len(gap_papers)} additional papers")
+        console.print(f"  Found {len(gap_papers)} additional papers from gap analysis")
         papers.extend(gap_papers)
+        papers = _dedup_papers(papers)
 
     console.print(f"  Total: {len(papers)} papers")
 
-    # Phase 2: deep-reads
-    max_read = min(depth, len(papers))
-    console.print(f"[cyan]Phase 2: [{provider}] deep-reading top {max_read} papers...[/cyan]")
-    read_papers = opus_deep_read(papers, topic, max_read=max_read, provider=provider)
+    # ── Phase 2: deep-reads ──────────────────────────────────────────
+    read_papers = _load_checkpoint(topic, "phase2_deepread")
+    if read_papers is not None:
+        console.print(f"[dim]Phase 2: loaded {len(read_papers)} deep-read papers from checkpoint[/dim]")
+    else:
+        max_read = min(depth, len(papers))
+        console.print(f"[cyan]Phase 2: [{provider}] deep-reading top {max_read} papers...[/cyan]")
+        read_papers = opus_deep_read(papers, topic, max_read=max_read, provider=provider)
+        _save_checkpoint(topic, "phase2_deepread", read_papers)
 
-    # Phase 3: synthesize
-    console.print(f"[cyan]Phase 3: [{provider}] synthesizing survey...[/cyan]")
-    survey = opus_synthesize(topic, read_papers, config, provider=provider)
+    # ── Phase 3: synthesize ──────────────────────────────────────────
+    survey = _load_checkpoint(topic, "phase3_survey")
+    if survey is not None:
+        console.print("[dim]Phase 3: loaded survey from checkpoint[/dim]")
+    else:
+        console.print(f"[cyan]Phase 3: [{provider}] synthesizing survey...[/cyan]")
+        survey = opus_synthesize(topic, read_papers, config, provider=provider)
+        _save_checkpoint(topic, "phase3_survey", survey)
 
-    # Save locally
+    # ── Save final outputs ───────────────────────────────────────────
     full_survey = f"# Survey: {topic}\n\nGenerated: {datetime.now().isoformat()}\n\n{survey}"
     output.write_text(full_survey)
     console.print(f"\n[green]Survey saved to: {output}[/green]")
 
-    # Save raw data
     data_path = output.with_suffix(".json")
     raw = [{
         "title": p.get("title"), "url": p.get("url"), "year": p.get("year"),
@@ -403,7 +553,7 @@ def run_survey(topic: str, depth: int = 20, output_path: str | None = None, prov
     data_path.write_text(json.dumps(raw, indent=2, default=str))
     console.print(f"[green]Paper data saved to: {data_path}[/green]")
 
-    # Push to Notion
+    # Push to Notion (always via Claude Sonnet, regardless of provider)
     console.print("[cyan]Pushing to Notion...[/cyan]")
     push_to_notion(topic, full_survey)
 
@@ -419,10 +569,20 @@ def main():
         default="claude",
         help="LLM provider to use: 'claude' (default) or 'codex'",
     )
+    parser.add_argument("--skip-gaps", action="store_true", help="Skip Phase 1b gap detection")
+    parser.add_argument("--fresh", action="store_true", help="Clear checkpoints and start from scratch")
     args = parser.parse_args()
 
     setup_logging()
-    run_survey(args.topic, depth=args.depth, output_path=args.output, provider=args.provider)
+
+    if args.fresh:
+        import shutil
+        cp_dir = _checkpoint_dir(args.topic)
+        if cp_dir.exists():
+            shutil.rmtree(cp_dir)
+            console.print(f"[yellow]Cleared checkpoints: {cp_dir}[/yellow]")
+
+    run_survey(args.topic, depth=args.depth, output_path=args.output, provider=args.provider, skip_gaps=args.skip_gaps)
 
 
 if __name__ == "__main__":

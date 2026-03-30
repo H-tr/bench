@@ -11,6 +11,7 @@ from tempfile import NamedTemporaryFile
 log = logging.getLogger("bench.codex")
 
 MAX_RETRIES = 5
+MAX_TIMEOUT_RETRIES = 2
 RETRY_WAIT = 60  # 1 minute
 
 _model: str | None = None
@@ -39,6 +40,9 @@ def ask_codex_sync(
     The codex CLI (npm install -g @openai/codex) is invoked via `codex exec`
     in full-auto mode so it runs non-interactively and returns the final text.
 
+    The prompt is written to a temporary file and piped via stdin to avoid
+    OS E2BIG errors when the prompt exceeds the argument list size limit.
+
     Args:
         system_prompt: Prepended to the prompt as context (codex has no
                        dedicated --system-prompt flag).
@@ -61,14 +65,21 @@ def ask_codex_sync(
 
     log.debug("Calling Codex CLI (%d char prompt, model=%s)", len(full_prompt), model or "default")
 
+    timeout_count = 0
     for attempt in range(1, MAX_RETRIES + 1):
         output_path: Path | None = None
         try:
+            # Write prompt to a temp file to avoid E2BIG on large prompts
+            with NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as prompt_file:
+                prompt_file.write(full_prompt)
+                prompt_path = Path(prompt_file.name)
+
             with NamedTemporaryFile(mode="r+", suffix=".txt") as output_file:
                 output_path = Path(output_file.name)
-                run_cmd = [*cmd, "--output-last-message", output_file.name, full_prompt]
+                run_cmd = [*cmd, "--output-last-message", output_file.name]
                 result = subprocess.run(
                     run_cmd,
+                    input=full_prompt,
                     capture_output=True,
                     text=True,
                     timeout=timeout,
@@ -81,11 +92,21 @@ def ask_codex_sync(
                         return final_output
                     return result.stdout.strip()
         except subprocess.TimeoutExpired:
+            timeout_count += 1
             log.warning("Codex CLI timed out (attempt %d/%d, %ds)", attempt, MAX_RETRIES, timeout)
-            if attempt < MAX_RETRIES:
-                log.info("Waiting %d minutes before retry...", RETRY_WAIT // 60)
-                time.sleep(RETRY_WAIT)
+            if timeout_count >= MAX_TIMEOUT_RETRIES:
+                raise RuntimeError(
+                    f"Codex CLI timed out {timeout_count} times ({timeout}s each) — aborting"
+                )
+            log.info("Waiting %d minutes before retry...", RETRY_WAIT // 60)
+            time.sleep(RETRY_WAIT)
             continue
+        finally:
+            # Clean up prompt temp file
+            try:
+                prompt_path.unlink(missing_ok=True)
+            except NameError:
+                pass
 
         stderr = result.stderr.strip()
         if output_path is not None and output_path.exists():

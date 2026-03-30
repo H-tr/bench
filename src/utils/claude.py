@@ -9,6 +9,7 @@ import time
 log = logging.getLogger("bench.claude")
 
 MAX_RETRIES = 5
+MAX_TIMEOUT_RETRIES = 2  # Fewer retries for timeouts (retrying the same heavy call rarely helps)
 RETRY_WAIT = 60  # 1 minute
 
 _model: str | None = None
@@ -56,18 +57,31 @@ def ask_claude_sync(
 
     log.debug("Calling Claude CLI (%d char prompt, model=%s)", len(prompt), model or "default")
 
+    timeout_count = 0
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             result = subprocess.run(cmd, input=prompt, capture_output=True, text=True, timeout=timeout)
         except subprocess.TimeoutExpired:
+            timeout_count += 1
             log.warning("Claude CLI timed out (attempt %d/%d, %ds)", attempt, MAX_RETRIES, timeout)
-            if attempt < MAX_RETRIES:
-                log.info("Waiting %d minutes before retry...", RETRY_WAIT // 60)
-                time.sleep(RETRY_WAIT)
+            if timeout_count >= MAX_TIMEOUT_RETRIES:
+                raise RuntimeError(
+                    f"Claude CLI timed out {timeout_count} times ({timeout}s each) — aborting"
+                )
+            log.info("Waiting %d minutes before retry...", RETRY_WAIT // 60)
+            time.sleep(RETRY_WAIT)
             continue
 
         if result.returncode == 0:
-            return result.stdout.strip()
+            if result.stderr.strip():
+                log.debug("Claude CLI stderr (rc=0): %s", result.stderr.strip()[:300])
+            output = result.stdout.strip()
+            if not output:
+                log.warning("Claude CLI returned success but empty stdout (attempt %d/%d)", attempt, MAX_RETRIES)
+                if attempt < MAX_RETRIES:
+                    time.sleep(RETRY_WAIT)
+                    continue
+            return output
 
         stderr = result.stderr.strip()
         log.warning(
