@@ -69,7 +69,7 @@ Focus on this specific angle: {focus}
 IMPORTANT: Stay strictly on topic. Do NOT drift to adjacent popular areas.
 AVOID popularity bias: a niche paper precisely about this topic is MORE valuable
 than a famous paper only tangentially related.
-
+{blacklist_warning}
 Search Semantic Scholar, arXiv, and the web. Follow citation chains. Find ~{count} items.
 
 For each item, provide:
@@ -100,6 +100,28 @@ def _get_notable_groups() -> list[str]:
         return config.get("survey", {}).get("notable_groups", [])
     except Exception:
         return []
+
+
+def _get_blacklisted_authors() -> list[dict]:
+    """Load blacklisted authors from config."""
+    try:
+        config = load_config()
+        return config.get("blacklisted_authors", [])
+    except Exception:
+        return []
+
+
+def _blacklist_warning() -> str:
+    """Build a warning string for prompts from the blacklisted authors list."""
+    authors = _get_blacklisted_authors()
+    if not authors:
+        return ""
+    lines = [f"- {a['name']} ({a.get('affiliation', '?')}): {a.get('reason', 'unreliable')}" for a in authors]
+    return (
+        "\n\nCAUTION — UNRELIABLE AUTHORS: The following researchers have been flagged for fabricating data. "
+        "You may mention their conceptual contributions if genuinely relevant, but do NOT trust or cite their experimental results. "
+        "Always note the reliability concern when referencing their work:\n" + "\n".join(lines)
+    )
 
 
 def opus_search(topic: str, depth: int, provider: str = "claude") -> str:
@@ -145,7 +167,7 @@ def opus_search(topic: str, depth: int, provider: str = "claude") -> str:
     # Paper search rounds
     for i, focus in enumerate(paper_focuses):
         log.info("  Search round %d/%d: %s", i + 1, total_rounds, focus[:60])
-        prompt = SEARCH_PROMPT.format(topic=topic, focus=focus, count=per_focus)
+        prompt = SEARCH_PROMPT.format(topic=topic, focus=focus, count=per_focus, blacklist_warning=_blacklist_warning())
 
         try:
             response = _ask(prompt, provider, timeout=1800, allowed_tools=search_tools)
@@ -258,7 +280,7 @@ def find_gaps_and_fill(topic: str, existing_papers: list[dict], depth: int, prov
 
     for i, focus in enumerate(gap_focuses):
         log.info("  Gap search %d/%d: %s", i + 1, len(gap_focuses), focus[:60])
-        search_prompt = SEARCH_PROMPT.format(topic=topic, focus=focus, count=per_focus)
+        search_prompt = SEARCH_PROMPT.format(topic=topic, focus=focus, count=per_focus, blacklist_warning=_blacklist_warning())
         try:
             response = _ask(search_prompt, provider, timeout=900, allowed_tools=["WebSearch", "WebFetch", "Bash"])
             papers = parse_paper_list(response)
@@ -428,6 +450,7 @@ Use this structure:
 - For software/tools, include the GitHub URL or project page
 - Include a references section at the end
 - Be thorough but not padded — every sentence should earn its place
+{blacklist_warning}
 - DEFINE EVERY TERM ON FIRST USE: whenever you introduce a technical concept, acronym, or framework for the first time, immediately follow it with a brief parenthetical or inline definition (1–2 sentences). Make the definition concrete — say what it *is*, how it works at a high level, and how it differs from the closest related concept. For example: "Signal Temporal Logic (STL), a formal language for specifying time-bounded constraints over continuous signals (unlike Linear Temporal Logic which operates on discrete Boolean propositions), enables..." Do NOT assume the reader knows any term, even common ones like PDDL, affordance, or MDP.
 - WRITE LIKE A HUMAN: avoid em dashes (—) and avoid using a colon to introduce a clause mid-sentence. Instead, restructure into natural prose. For example, prefer "This approach builds on X and extends it to Y" over "This approach — which builds on X — extends it to Y"; prefer "The key insight is that..." over "Key insight: ...". Colons are fine in headings and lists, but not as sentence punctuation.
 - IMPORTANT: Output the FULL survey text directly in your response. Do NOT use any file-writing tools. Just print the entire markdown survey as your answer."""
@@ -464,6 +487,7 @@ def opus_synthesize(topic: str, papers: list[dict], config: dict, provider: str 
         n_papers=len(papers),
         n_read=len([p for p in papers if p.get("deep_read")]),
         paper_summaries=paper_text,
+        blacklist_warning=_blacklist_warning(),
     )
 
     return _ask(prompt, provider, timeout=1800, allowed_tools=["WebSearch", "WebFetch", "Bash"])

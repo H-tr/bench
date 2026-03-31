@@ -180,6 +180,17 @@ digest:
 paths:
   dropbox_data: "~/Dropbox/bench-data"
 
+# --- Blacklisted authors ---
+# Papers from these authors should be excluded from surveys and digests.
+# Reason should be noted so future entries are consistent.
+blacklisted_authors:
+  - name: "Ziwei Wang"
+    affiliation: "NTU"
+    reason: "Fabricated data; experimental results are not reliable"
+  - name: "Lin Shao"
+    affiliation: "NUS"
+    reason: "Fabricated data; experimental results are not reliable"
+
 # --- Survey ---
 survey:
   # Notable research groups to check during literature search.
