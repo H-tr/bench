@@ -59,7 +59,7 @@ def ask_codex_sync(
     if system_prompt:
         full_prompt = f"{system_prompt}\n\n{prompt}"
 
-    cmd = ["codex", "exec", "--full-auto", "--color", "never"]
+    cmd = ["codex", "exec", "--dangerously-bypass-approvals-and-sandbox", "--color", "never"]
     if model:
         cmd.extend(["--model", model])
 
